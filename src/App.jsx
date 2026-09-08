@@ -356,18 +356,51 @@ export default function App() {
     };
   }, [filtered]);
 
-  // Datos para gráficos
+  // Datos para gráficos (incluyen hectáreas y costo/ha, deduplicando superficie
+  // por Campo+Lote+Cultivo para no sumar la misma hectárea varias veces)
   const porCultivo = useMemo(() => {
     const m = new Map();
-    filtered.forEach((r) => { if (!r["Cultivo"]) return; m.set(r["Cultivo"], (m.get(r["Cultivo"]) || 0) + (r["U$S/Total"] || 0)); });
-    return Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    const seenSup = new Set();
+    filtered.forEach((r) => {
+      if (!r["Cultivo"]) return;
+      if (!m.has(r["Cultivo"])) m.set(r["Cultivo"], { gasto: 0, ha: 0 });
+      const e = m.get(r["Cultivo"]);
+      e.gasto += r["U$S/Total"] || 0;
+      const supKey = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}`;
+      if (!seenSup.has(supKey)) { seenSup.add(supKey); e.ha += r["Sup.Cultivo"] || 0; }
+    });
+    return Array.from(m.entries()).map(([name, e]) => ({ name, value: e.gasto, ha: e.ha, costoHa: e.ha > 0 ? e.gasto / e.ha : 0 })).sort((a, b) => b.value - a.value);
   }, [filtered]);
 
   const porCampo = useMemo(() => {
     const m = new Map();
-    filtered.forEach((r) => { if (!r["Campo"]) return; m.set(r["Campo"], (m.get(r["Campo"]) || 0) + (r["U$S/Total"] || 0)); });
-    return Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    const seenSup = new Set();
+    filtered.forEach((r) => {
+      if (!r["Campo"]) return;
+      if (!m.has(r["Campo"])) m.set(r["Campo"], { gasto: 0, ha: 0 });
+      const e = m.get(r["Campo"]);
+      e.gasto += r["U$S/Total"] || 0;
+      const supKey = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}`;
+      if (!seenSup.has(supKey)) { seenSup.add(supKey); e.ha += r["Sup.Cultivo"] || 0; }
+    });
+    return Array.from(m.entries()).map(([name, e]) => ({ name, value: e.gasto, ha: e.ha, costoHa: e.ha > 0 ? e.gasto / e.ha : 0 })).sort((a, b) => b.value - a.value);
   }, [filtered]);
+
+  const costoHaPorCultivo = useMemo(() => [...porCultivo].filter((e) => e.ha > 0).sort((a, b) => b.costoHa - a.costoHa), [porCultivo]);
+  const costoHaPorCampo = useMemo(() => [...porCampo].filter((e) => e.ha > 0).sort((a, b) => b.costoHa - a.costoHa), [porCampo]);
+
+  // Tooltip que muestra gasto total y costo/ha juntos
+  const GastoTooltip = ({ active, payload, label }) => {
+    if (!active || !payload || !payload.length) return null;
+    const d = payload[0].payload;
+    return (
+      <div style={{ background: "#FCFAF2", border: "1px solid #DCD2B8", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 3 }}>{label ?? d.name}</div>
+        <div>Gasto: {fmtUSD(d.value)}</div>
+        {d.ha > 0 && <div style={{ color: "var(--ink-soft)" }}>{fmtNum(d.ha, 1)} ha · {fmtUSD2(d.costoHa)}/ha</div>}
+      </div>
+    );
+  };
 
   const evolucionMensual = useMemo(() => {
     const m = new Map();
@@ -673,7 +706,7 @@ export default function App() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" vertical={false} />
                     <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#6B5E4F" }} axisLine={{ stroke: "#DCD2B8" }} tickLine={false} />
                     <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v / 1000) + "k"} axisLine={false} tickLine={false} />
-                    <Tooltip formatter={(v) => fmtUSD(v)} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Tooltip content={<GastoTooltip />} />
                     <Bar dataKey="value" radius={[3, 3, 0, 0]}>
                       {porCultivo.map((e, i) => <Cell key={i} fill={cultivoColor(e.name, i)} />)}
                     </Bar>
@@ -688,8 +721,36 @@ export default function App() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
                     <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v / 1000) + "k"} axisLine={false} tickLine={false} />
                     <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
-                    <Tooltip formatter={(v) => fmtUSD(v)} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Tooltip content={<GastoTooltip />} />
                     <Bar dataKey="value" fill="#B8842E" radius={[0, 3, 3, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="agri-card" style={{ padding: 16 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Costo por hectárea · por cultivo</div>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={costoHaPorCultivo} margin={{ left: -10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#6B5E4F" }} axisLine={{ stroke: "#DCD2B8" }} tickLine={false} />
+                    <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                    <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Bar dataKey="costoHa" radius={[3, 3, 0, 0]}>
+                      {costoHaPorCultivo.map((e, i) => <Cell key={i} fill={cultivoColor(e.name, i)} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="agri-card" style={{ padding: 16 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Costo por hectárea · por campo</div>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={costoHaPorCampo} layout="vertical" margin={{ left: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
+                    <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Bar dataKey="costoHa" fill="#2F5B66" radius={[0, 3, 3, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
