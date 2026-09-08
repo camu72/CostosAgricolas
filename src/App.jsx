@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, onValue, set as dbSet } from "firebase/database";
+import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_PATH } from "./firebaseConfig.js";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell,
@@ -7,6 +10,7 @@ import {
 import {
   Upload, RefreshCw, Search, X, Sprout, MapPin, DollarSign, Ruler,
   ChevronLeft, ChevronRight, ArrowUpDown, Trash2, FileSpreadsheet, AlertCircle, Eye,
+  Cloud, CloudOff,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +48,17 @@ if (typeof window !== "undefined" && !window.storage) {
 
 const STORAGE_KEY = "produccion-agricola-dataset-v1";
 const PAGE_SIZE = 30;
+
+// Conexión a Firebase (solo si se completó firebaseConfig.js con datos reales)
+let cloudDb = null;
+if (CLOUD_SYNC_ENABLED) {
+  try {
+    const fbApp = initializeApp(firebaseConfig);
+    cloudDb = getDatabase(fbApp);
+  } catch (e) {
+    console.error("No se pudo inicializar Firebase:", e);
+  }
+}
 
 const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B" };
 const FALLBACK_COLORS = ["#5B7C4B", "#C68F41", "#35606B", "#8A5A3B", "#7C8A4B", "#A1462F"];
@@ -131,6 +146,7 @@ export default function App() {
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(CLOUD_SYNC_ENABLED ? "connecting" : "local");
   const fileInputRef = useRef(null);
 
   // Filtros
@@ -154,8 +170,11 @@ export default function App() {
     return () => { try { document.head.removeChild(link); } catch (e) {} };
   }, []);
 
-  // Cargar último dataset guardado
+  // Cargar último dataset guardado: primero del caché local (instantáneo),
+  // y si hay Firebase configurado, nos suscribimos a la nube (tiempo real).
   useEffect(() => {
+    let cloudUnsub = null;
+
     (async () => {
       try {
         const res = await window.storage.get(STORAGE_KEY, false);
@@ -170,22 +189,60 @@ export default function App() {
           setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length });
         }
       } catch (e) {
-        // no hay datos guardados todavía, es normal
+        // no hay datos guardados todavía en este dispositivo, es normal
       } finally {
-        setBootLoading(false);
+        if (!CLOUD_SYNC_ENABLED) setBootLoading(false);
+      }
+
+      if (CLOUD_SYNC_ENABLED && cloudDb) {
+        const dbRef = ref(cloudDb, CLOUD_PATH);
+        cloudUnsub = onValue(
+          dbRef,
+          (snapshot) => {
+            const payload = snapshot.val();
+            if (payload && payload.rows && payload.columns) {
+              const objRows = payload.rows.map((arr) => {
+                const o = {};
+                payload.columns.forEach((c, i) => { o[c] = arr[i]; });
+                return o;
+              });
+              setRows(objRows);
+              setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length });
+            }
+            setSyncStatus("cloud");
+            setBootLoading(false);
+          },
+          (err) => {
+            console.error("Error de sincronización con la nube:", err);
+            setSyncStatus("error");
+            setBootLoading(false);
+          }
+        );
       }
     })();
+
+    return () => { if (cloudUnsub) cloudUnsub(); };
   }, []);
 
   const persist = useCallback(async (normalizedRows, fileName) => {
+    const columns = COLS;
+    const dataRows = normalizedRows.map((r) => columns.map((c) => r[c]));
+    const payload = { columns, rows: dataRows, fileName, updatedAt: new Date().toISOString() };
+
     try {
-      const columns = COLS;
-      const dataRows = normalizedRows.map((r) => columns.map((c) => r[c]));
-      const payload = { columns, rows: dataRows, fileName, updatedAt: new Date().toISOString() };
       await window.storage.set(STORAGE_KEY, JSON.stringify(payload), false);
     } catch (e) {
-      // si falla el guardado, seguimos igual con los datos en memoria
       console.error("No se pudo guardar en caché local:", e);
+    }
+
+    if (CLOUD_SYNC_ENABLED && cloudDb) {
+      try {
+        await dbSet(ref(cloudDb, CLOUD_PATH), payload);
+        setSyncStatus("cloud");
+      } catch (e) {
+        console.error("No se pudo sincronizar con la nube:", e);
+        setSyncStatus("error");
+      }
     }
   }, []);
 
@@ -229,6 +286,9 @@ export default function App() {
   const clearDataset = async () => {
     setRows([]); setMeta(null);
     try { await window.storage.delete(STORAGE_KEY, false); } catch (e) {}
+    if (CLOUD_SYNC_ENABLED && cloudDb) {
+      try { await dbSet(ref(cloudDb, CLOUD_PATH), null); } catch (e) {}
+    }
   };
 
   // Listas para filtros
@@ -490,6 +550,11 @@ export default function App() {
                 <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
               ) : "Cargá tu planilla para empezar a consultar los datos"}
             </div>
+            {CLOUD_SYNC_ENABLED && (
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, marginTop: 6, padding: "3px 9px", borderRadius: 999, background: syncStatus === "cloud" ? "rgba(75,107,58,0.12)" : syncStatus === "error" ? "rgba(161,70,47,0.12)" : "rgba(107,94,79,0.12)", color: syncStatus === "cloud" ? "var(--green)" : syncStatus === "error" ? "var(--rust)" : "var(--ink-soft)" }}>
+                {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado en todos tus dispositivos</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión a la nube · usando datos locales</> : <><Cloud size={12} /> Conectando…</>}
+              </div>
+            )}
           </div>
           {meta && (
             <div style={{ display: "flex", gap: 8 }}>
