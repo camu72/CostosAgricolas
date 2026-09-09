@@ -462,7 +462,14 @@ export default function App() {
   const selectedLoteRows = useMemo(() => {
     if (!selectedLoteKey) return [];
     return filtered.filter((r) => `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}` === selectedLoteKey)
-      .slice().sort((a, b) => (b["U$S/Total"] || 0) - (a["U$S/Total"] || 0));
+      .slice().sort((a, b) => {
+        const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
+        if (fa !== fb) return fa < fb ? -1 : 1;
+        const ra = a["Tipo item"] || "", rb = b["Tipo item"] || "";
+        if (ra !== rb) return ra.localeCompare(rb, "es");
+        const ca = a["Concepto"] || "", cb = b["Concepto"] || "";
+        return ca.localeCompare(cb, "es");
+      });
   }, [filtered, selectedLoteKey]);
   const selectedLoteByItem = useMemo(() => {
     const m = new Map();
