@@ -919,20 +919,27 @@ export default function App() {
                       <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
                         <thead>
                           <tr>
-                            {["Fecha", "Rubro", "Concepto", "Cant.", "USD"].map((h) => (
-                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 10, padding: "6px 8px" }}>{h}</th>
+                            {["Fecha / Labor", "Rubro", "Concepto", "Cant.", "USD"].map((h) => (
+                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px" }}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
                           {selectedLoteRows.map((r, i) => {
                             const prev = selectedLoteRows[i - 1];
-                            const sameFecha = prev && prev["Fecha"] === r["Fecha"];
-                            const sameRubro = sameFecha && prev["Tipo item"] === r["Tipo item"];
-                            const tdSm = { padding: "5px 8px", fontSize: 12 };
+                            const sameFechaLabor = prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"];
+                            const sameRubro = sameFechaLabor && prev["Tipo item"] === r["Tipo item"];
+                            const tdSm = { padding: "4px 7px", fontSize: 11 };
                             return (
-                              <tr key={i} className="agri-tr" style={{ borderTop: !sameFecha && i > 0 ? "1px solid var(--ink)" : undefined }}>
-                                <td className="agri-td" style={{ ...tdSm, color: sameFecha ? "var(--line)" : "var(--ink)" }}>{sameFecha ? "″" : fmtDate(r["Fecha"])}</td>
+                              <tr key={i} className="agri-tr" style={{ borderTop: !sameFechaLabor && i > 0 ? "1px solid var(--ink)" : undefined }}>
+                                <td className="agri-td" style={{ ...tdSm, color: sameFechaLabor ? "var(--line)" : "var(--ink)" }}>
+                                  {sameFechaLabor ? "″" : (
+                                    <>
+                                      <div>{fmtDate(r["Fecha"])}</div>
+                                      <div style={{ fontSize: 9, color: "var(--ink-soft)", fontWeight: 400 }}>{r["Origen"]}</div>
+                                    </>
+                                  )}
+                                </td>
                                 <td className="agri-td" style={{ ...tdSm, color: sameRubro ? "var(--line)" : "var(--ink-soft)" }}>{sameRubro ? "″" : r["Tipo item"]}</td>
                                 <td className="agri-td" style={tdSm}>{r["Concepto"]}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
