@@ -165,7 +165,7 @@ export default function App() {
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap";
+    link.href = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
     document.head.appendChild(link);
     return () => { try { document.head.removeChild(link); } catch (e) {} };
   }, []);
@@ -528,13 +528,13 @@ export default function App() {
           padding: 20px 16px 60px;
         }
         .agri-root * { box-sizing: border-box; }
-        .agri-serif { font-family: 'Fraunces', Georgia, serif; }
+        .agri-serif { font-family: 'Inter', system-ui, sans-serif; font-weight: 600; letter-spacing: -0.005em; }
         .agri-shell { max-width: 1180px; margin: 0 auto; }
         .agri-masthead {
           display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
           border-bottom: 2px solid var(--ink); padding-bottom: 14px; margin-bottom: 22px; flex-wrap: wrap;
         }
-        .agri-title { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.1; }
+        .agri-title { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; font-family: 'Inter', system-ui, sans-serif; }
         .agri-sub { color: var(--ink-soft); font-size: 13px; margin-top: 4px; }
         .agri-card {
           background: var(--paper-raised); border: 1px solid var(--line); border-radius: 6px;
@@ -560,7 +560,7 @@ export default function App() {
         }
         .agri-chip[data-active="true"] { background: var(--green); border-color: var(--green); color: #fff; }
         .agri-kpi-label { font-size: 12px; color: var(--ink-soft); font-weight: 500; }
-        .agri-kpi-value { font-family: 'Fraunces', Georgia, serif; font-size: 26px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+        .agri-kpi-value { font-family: 'Inter', system-ui, sans-serif; font-size: 20px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
         .agri-th {
           text-align: left; font-size: 11px; text-transform: none; color: var(--ink-soft); font-weight: 600;
           padding: 8px 10px; border-bottom: 1px solid var(--ink); cursor: pointer; white-space: nowrap; user-select: none;
@@ -574,8 +574,8 @@ export default function App() {
         }
         .agri-dropzone[data-drag="true"] { border-color: var(--green); background: rgba(75,107,58,0.06); }
         @media (max-width: 640px) {
-          .agri-title { font-size: 22px; }
-          .agri-kpi-value { font-size: 20px; }
+          .agri-title { font-size: 19px; }
+          .agri-kpi-value { font-size: 16px; }
           .agri-detail-grid { grid-template-columns: 1fr !important; }
         }
       `}</style>
@@ -620,7 +620,7 @@ export default function App() {
             onDrop={onDrop}
           >
             <FileSpreadsheet size={40} color="var(--ink-soft)" />
-            <div className="agri-serif" style={{ fontSize: 19, fontWeight: 600 }}>
+            <div className="agri-serif" style={{ fontSize: 16, fontWeight: 700 }}>
               {parsing ? "Leyendo el archivo…" : "Arrastrá tu Excel acá"}
             </div>
             <div style={{ fontSize: 13, color: "var(--ink-soft)", maxWidth: 360 }}>
@@ -869,7 +869,7 @@ export default function App() {
               <div className="agri-card" style={{ padding: 16, marginBottom: 20, borderColor: "var(--gold)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
                   <div>
-                    <div className="agri-serif" style={{ fontSize: 18, fontWeight: 600 }}>
+                    <div className="agri-serif" style={{ fontSize: 15, fontWeight: 700 }}>
                       {selectedLoteInfo.campo} · Lote {selectedLoteInfo.lote} · {selectedLoteInfo.cultivo}
                     </div>
                     <div style={{ fontSize: 13, color: "var(--ink-soft)", marginTop: 2 }}>
@@ -882,19 +882,19 @@ export default function App() {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 16 }}>
                   <div>
                     <div className="agri-kpi-label">Costo total</div>
-                    <div className="agri-kpi-value" style={{ fontSize: 20 }}>{fmtUSD(selectedLoteInfo.total)}</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtUSD(selectedLoteInfo.total)}</div>
                   </div>
                   <div>
                     <div className="agri-kpi-label">Insumos</div>
-                    <div className="agri-kpi-value" style={{ fontSize: 20 }}>{fmtUSD(selectedLoteInfo.insumos)}</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtUSD(selectedLoteInfo.insumos)}</div>
                   </div>
                   <div>
                     <div className="agri-kpi-label">Servicios</div>
-                    <div className="agri-kpi-value" style={{ fontSize: 20 }}>{fmtUSD(selectedLoteInfo.servicios)}</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtUSD(selectedLoteInfo.servicios)}</div>
                   </div>
                   <div>
                     <div className="agri-kpi-label">Costo por hectárea</div>
-                    <div className="agri-kpi-value" style={{ fontSize: 20 }}>{fmtUSD2(selectedLoteInfo.costoHa)}</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtUSD2(selectedLoteInfo.costoHa)}</div>
                   </div>
                 </div>
 
