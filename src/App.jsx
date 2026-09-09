@@ -5,7 +5,7 @@ import { getDatabase, ref, onValue, set as dbSet } from "firebase/database";
 import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_PATH } from "./firebaseConfig.js";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Cell,
+  Tooltip, ResponsiveContainer, Cell, Legend,
 } from "recharts";
 import {
   Upload, RefreshCw, Search, X, Sprout, MapPin, DollarSign, Ruler,
@@ -356,71 +356,75 @@ export default function App() {
     };
   }, [filtered]);
 
-  // Datos para gráficos (incluyen hectáreas y costo/ha, deduplicando superficie
-  // por Campo+Lote+Cultivo para no sumar la misma hectárea varias veces)
+  // Datos para gráficos: todos normalizados por hectárea y desglosados por cultivo
+  // (deduplicando superficie por Campo+Lote+Cultivo para no sumar la misma ha varias veces)
   const porCultivo = useMemo(() => {
     const m = new Map();
     const seenSup = new Set();
     filtered.forEach((r) => {
       if (!r["Cultivo"]) return;
-      if (!m.has(r["Cultivo"])) m.set(r["Cultivo"], { gasto: 0, ha: 0 });
+      if (!m.has(r["Cultivo"])) m.set(r["Cultivo"], { gasto: 0, ha: 0, insumos: 0, servicios: 0 });
       const e = m.get(r["Cultivo"]);
-      e.gasto += r["U$S/Total"] || 0;
+      const v = r["U$S/Total"] || 0;
+      e.gasto += v;
+      if (r["Tipo Det."] === "INSUMOS") e.insumos += v; else if (r["Tipo Det."] === "SERVICIOS") e.servicios += v;
       const supKey = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}`;
       if (!seenSup.has(supKey)) { seenSup.add(supKey); e.ha += r["Sup.Cultivo"] || 0; }
     });
-    return Array.from(m.entries()).map(([name, e]) => ({ name, value: e.gasto, ha: e.ha, costoHa: e.ha > 0 ? e.gasto / e.ha : 0 })).sort((a, b) => b.value - a.value);
-  }, [filtered]);
-
-  const porCampo = useMemo(() => {
-    const m = new Map();
-    const seenSup = new Set();
-    filtered.forEach((r) => {
-      if (!r["Campo"]) return;
-      if (!m.has(r["Campo"])) m.set(r["Campo"], { gasto: 0, ha: 0 });
-      const e = m.get(r["Campo"]);
-      e.gasto += r["U$S/Total"] || 0;
-      const supKey = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}`;
-      if (!seenSup.has(supKey)) { seenSup.add(supKey); e.ha += r["Sup.Cultivo"] || 0; }
-    });
-    return Array.from(m.entries()).map(([name, e]) => ({ name, value: e.gasto, ha: e.ha, costoHa: e.ha > 0 ? e.gasto / e.ha : 0 })).sort((a, b) => b.value - a.value);
+    return Array.from(m.entries()).map(([name, e]) => ({
+      name, value: e.gasto, ha: e.ha,
+      costoHa: e.ha > 0 ? e.gasto / e.ha : 0,
+      insumosHa: e.ha > 0 ? e.insumos / e.ha : 0,
+      serviciosHa: e.ha > 0 ? e.servicios / e.ha : 0,
+    })).sort((a, b) => b.value - a.value);
   }, [filtered]);
 
   const costoHaPorCultivo = useMemo(() => [...porCultivo].filter((e) => e.ha > 0).sort((a, b) => b.costoHa - a.costoHa), [porCultivo]);
-  const costoHaPorCampo = useMemo(() => [...porCampo].filter((e) => e.ha > 0).sort((a, b) => b.costoHa - a.costoHa), [porCampo]);
+  const cultivosConHa = useMemo(() => costoHaPorCultivo.map((e) => e.name), [costoHaPorCultivo]);
+  const haPorCultivoMap = useMemo(() => new Map(porCultivo.map((e) => [e.name, e.ha])), [porCultivo]);
 
-  // Tooltip que muestra gasto total y costo/ha juntos
-  const GastoTooltip = ({ active, payload, label }) => {
-    if (!active || !payload || !payload.length) return null;
-    const d = payload[0].payload;
-    return (
-      <div style={{ background: "#FCFAF2", border: "1px solid #DCD2B8", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
-        <div style={{ fontWeight: 600, marginBottom: 3 }}>{label ?? d.name}</div>
-        <div>Gasto: {fmtUSD(d.value)}</div>
-        {d.ha > 0 && <div style={{ color: "var(--ink-soft)" }}>{fmtNum(d.ha, 1)} ha · {fmtUSD2(d.costoHa)}/ha</div>}
-      </div>
-    );
-  };
-
-  const evolucionMensual = useMemo(() => {
-    const m = new Map();
+  // Evolución mensual del costo por hectárea, con una línea por cultivo
+  const evolucionMensualPorCultivo = useMemo(() => {
+    const m = new Map(); // ym -> { cultivo: gastoDelMes }
     filtered.forEach((r) => {
-      if (!r["Fecha"]) return;
+      if (!r["Fecha"] || !r["Cultivo"]) return;
       const ym = r["Fecha"].slice(0, 7);
-      m.set(ym, (m.get(ym) || 0) + (r["U$S/Total"] || 0));
+      if (!m.has(ym)) m.set(ym, {});
+      const bucket = m.get(ym);
+      bucket[r["Cultivo"]] = (bucket[r["Cultivo"]] || 0) + (r["U$S/Total"] || 0);
     });
-    return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([ym, value]) => ({ ym, label: monthLabel(ym), value }));
-  }, [filtered]);
+    return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([ym, bucket]) => {
+      const row = { ym, label: monthLabel(ym) };
+      cultivosConHa.forEach((c) => {
+        const ha = haPorCultivoMap.get(c) || 0;
+        row[c] = ha > 0 ? (bucket[c] || 0) / ha : 0;
+      });
+      return row;
+    });
+  }, [filtered, cultivosConHa, haPorCultivoMap]);
 
-  const porTipoItem = useMemo(() => {
-    const m = new Map();
-    filtered.forEach((r) => { if (!r["Tipo item"]) return; m.set(r["Tipo item"], (m.get(r["Tipo item"]) || 0) + (r["U$S/Total"] || 0)); });
-    const arr = Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
-    const top = arr.slice(0, 7);
-    const restoVal = arr.slice(7).reduce((a, b) => a + b.value, 0);
-    if (restoVal > 0) top.push({ name: "Otros", value: restoVal });
-    return top;
-  }, [filtered]);
+  // Principales rubros de gasto por hectárea, agrupados por cultivo
+  const rubrosPorCultivo = useMemo(() => {
+    const m = new Map(); // tipoItem -> { cultivo: gasto }
+    filtered.forEach((r) => {
+      if (!r["Tipo item"] || !r["Cultivo"]) return;
+      if (!m.has(r["Tipo item"])) m.set(r["Tipo item"], {});
+      const bucket = m.get(r["Tipo item"]);
+      bucket[r["Cultivo"]] = (bucket[r["Cultivo"]] || 0) + (r["U$S/Total"] || 0);
+    });
+    const rows = Array.from(m.entries()).map(([name, bucket]) => {
+      const row = { name };
+      let rank = 0;
+      cultivosConHa.forEach((c) => {
+        const ha = haPorCultivoMap.get(c) || 0;
+        row[c] = ha > 0 ? (bucket[c] || 0) / ha : 0;
+        rank += row[c];
+      });
+      row._rank = rank;
+      return row;
+    }).sort((a, b) => b._rank - a._rank);
+    return rows.slice(0, 8);
+  }, [filtered, cultivosConHa, haPorCultivoMap]);
 
   // Comparativo por lotes (agrupa Campo + Lote + Cultivo dentro de lo ya filtrado)
   const loteAgg = useMemo(() => {
@@ -704,36 +708,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* Gráficos */}
+            {/* Gráficos — todos normalizados por hectárea y desglosados por cultivo */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginBottom: 20 }}>
-              <div className="agri-card" style={{ padding: 16 }}>
-                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Gasto por cultivo</div>
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={porCultivo} margin={{ left: -10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" vertical={false} />
-                    <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#6B5E4F" }} axisLine={{ stroke: "#DCD2B8" }} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v / 1000) + "k"} axisLine={false} tickLine={false} />
-                    <Tooltip content={<GastoTooltip />} />
-                    <Bar dataKey="value" radius={[3, 3, 0, 0]}>
-                      {porCultivo.map((e, i) => <Cell key={i} fill={cultivoColor(e.name, i)} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-
-              <div className="agri-card" style={{ padding: 16 }}>
-                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Gasto por campo</div>
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={porCampo} layout="vertical" margin={{ left: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v / 1000) + "k"} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
-                    <Tooltip content={<GastoTooltip />} />
-                    <Bar dataKey="value" fill="#B8842E" radius={[0, 3, 3, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-
               <div className="agri-card" style={{ padding: 16 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Costo por hectárea · por cultivo</div>
                 <ResponsiveContainer width="100%" height={220}>
@@ -750,46 +726,48 @@ export default function App() {
               </div>
 
               <div className="agri-card" style={{ padding: 16 }}>
-                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Costo por hectárea · por campo</div>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Composición del costo/ha · por cultivo</div>
                 <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={costoHaPorCampo} layout="vertical" margin={{ left: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
-                    <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
-                    <Bar dataKey="costoHa" fill="#2F5B66" radius={[0, 3, 3, 0]} />
+                  <BarChart data={costoHaPorCultivo} margin={{ left: -10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#6B5E4F" }} axisLine={{ stroke: "#DCD2B8" }} tickLine={false} />
+                    <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                    <Tooltip formatter={(v, name) => [fmtUSD2(v) + "/ha", name === "insumosHa" ? "Insumos" : "Servicios"]} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} formatter={(v) => (v === "insumosHa" ? "Insumos" : "Servicios")} />
+                    <Bar dataKey="insumosHa" stackId="costo" fill="#4B6B3A" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="serviciosHa" stackId="costo" fill="#B8842E" radius={[3, 3, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
 
               <div className="agri-card" style={{ padding: 16 }}>
-                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Evolución mensual del gasto</div>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Evolución mensual del costo/ha · por cultivo</div>
                 <ResponsiveContainer width="100%" height={220}>
-                  <AreaChart data={evolucionMensual} margin={{ left: -10 }}>
-                    <defs>
-                      <linearGradient id="gradGasto" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#2F5B66" stopOpacity={0.35} />
-                        <stop offset="95%" stopColor="#2F5B66" stopOpacity={0.03} />
-                      </linearGradient>
-                    </defs>
+                  <LineChart data={evolucionMensualPorCultivo} margin={{ left: -10 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#6B5E4F" }} axisLine={{ stroke: "#DCD2B8" }} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v / 1000) + "k"} axisLine={false} tickLine={false} />
-                    <Tooltip formatter={(v) => fmtUSD(v)} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
-                    <Area type="monotone" dataKey="value" stroke="#2F5B66" strokeWidth={2} fill="url(#gradGasto)" />
-                  </AreaChart>
+                    <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                    <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    {cultivosConHa.map((c, i) => (
+                      <Line key={c} type="monotone" dataKey={c} name={c} stroke={cultivoColor(c, i)} strokeWidth={2} dot={false} />
+                    ))}
+                  </LineChart>
                 </ResponsiveContainer>
               </div>
 
               <div className="agri-card" style={{ padding: 16 }}>
-                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Principales rubros de gasto</div>
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={porTipoItem} layout="vertical" margin={{ left: 10 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Principales rubros por hectárea · por cultivo</div>
+                <ResponsiveContainer width="100%" height={Math.max(220, rubrosPorCultivo.length * 30)}>
+                  <BarChart data={rubrosPorCultivo} layout="vertical" margin={{ left: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v / 1000) + "k"} axisLine={false} tickLine={false} />
+                    <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
                     <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 10, fill: "#2B2118" }} axisLine={false} tickLine={false} />
-                    <Tooltip formatter={(v) => fmtUSD(v)} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
-                    <Bar dataKey="value" fill="#4B6B3A" radius={[0, 3, 3, 0]} />
+                    <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    {cultivosConHa.map((c, i) => (
+                      <Bar key={c} dataKey={c} name={c} fill={cultivoColor(c, i)} radius={[0, 3, 3, 0]} />
+                    ))}
                   </BarChart>
                 </ResponsiveContainer>
               </div>
