@@ -930,6 +930,7 @@ export default function App() {
                             const sameFechaLabor = prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"];
                             const sameRubro = sameFechaLabor && prev["Tipo item"] === r["Tipo item"];
                             const tdSm = { padding: "4px 7px", fontSize: 11 };
+                            const tdLabor = { padding: "4px 7px", fontSize: 9, color: "var(--ink-soft)", fontWeight: 400 };
                             return (
                               <tr key={i} className="agri-tr" style={{ borderTop: !sameFechaLabor && i > 0 ? "1px solid var(--ink)" : undefined }}>
                                 <td className="agri-td" style={{ ...tdSm, color: sameFechaLabor ? "var(--line)" : "var(--ink)" }}>
@@ -940,8 +941,8 @@ export default function App() {
                                     </>
                                   )}
                                 </td>
-                                <td className="agri-td" style={{ ...tdSm, color: sameRubro ? "var(--line)" : "var(--ink-soft)" }}>{sameRubro ? "″" : r["Tipo item"]}</td>
-                                <td className="agri-td" style={tdSm}>{r["Concepto"]}</td>
+                                <td className="agri-td" style={{ ...tdLabor, color: sameRubro ? "var(--line)" : "var(--ink-soft)" }}>{sameRubro ? "″" : r["Tipo item"]}</td>
+                                <td className="agri-td" style={tdLabor}>{r["Concepto"]}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right", fontWeight: 600 }}>{r["U$S/Total"] === null ? "—" : fmtUSD2(r["U$S/Total"])}</td>
                               </tr>
