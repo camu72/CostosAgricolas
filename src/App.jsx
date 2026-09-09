@@ -383,26 +383,6 @@ export default function App() {
   const cultivosConHa = useMemo(() => costoHaPorCultivo.map((e) => e.name), [costoHaPorCultivo]);
   const haPorCultivoMap = useMemo(() => new Map(porCultivo.map((e) => [e.name, e.ha])), [porCultivo]);
 
-  // Evolución mensual del costo por hectárea, con una línea por cultivo
-  const evolucionMensualPorCultivo = useMemo(() => {
-    const m = new Map(); // ym -> { cultivo: gastoDelMes }
-    filtered.forEach((r) => {
-      if (!r["Fecha"] || !r["Cultivo"]) return;
-      const ym = r["Fecha"].slice(0, 7);
-      if (!m.has(ym)) m.set(ym, {});
-      const bucket = m.get(ym);
-      bucket[r["Cultivo"]] = (bucket[r["Cultivo"]] || 0) + (r["U$S/Total"] || 0);
-    });
-    return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([ym, bucket]) => {
-      const row = { ym, label: monthLabel(ym) };
-      cultivosConHa.forEach((c) => {
-        const ha = haPorCultivoMap.get(c) || 0;
-        row[c] = ha > 0 ? (bucket[c] || 0) / ha : 0;
-      });
-      return row;
-    });
-  }, [filtered, cultivosConHa, haPorCultivoMap]);
-
   // Principales rubros de gasto por hectárea, agrupados por cultivo
   const rubrosPorCultivo = useMemo(() => {
     const m = new Map(); // tipoItem -> { cultivo: gasto }
@@ -737,22 +717,6 @@ export default function App() {
                     <Bar dataKey="insumosHa" stackId="costo" fill="#4B6B3A" radius={[0, 0, 0, 0]} />
                     <Bar dataKey="serviciosHa" stackId="costo" fill="#B8842E" radius={[3, 3, 0, 0]} />
                   </BarChart>
-                </ResponsiveContainer>
-              </div>
-
-              <div className="agri-card" style={{ padding: 16 }}>
-                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Evolución mensual del costo/ha · por cultivo</div>
-                <ResponsiveContainer width="100%" height={220}>
-                  <LineChart data={evolucionMensualPorCultivo} margin={{ left: -10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#6B5E4F" }} axisLine={{ stroke: "#DCD2B8" }} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
-                    <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
-                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                    {cultivosConHa.map((c, i) => (
-                      <Line key={c} type="monotone" dataKey={c} name={c} stroke={cultivoColor(c, i)} strokeWidth={2} dot={false} />
-                    ))}
-                  </LineChart>
                 </ResponsiveContainer>
               </div>
 
