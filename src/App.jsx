@@ -920,20 +920,26 @@ export default function App() {
                         <thead>
                           <tr>
                             {["Fecha", "Rubro", "Concepto", "Cant.", "USD"].map((h) => (
-                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)" }}>{h}</th>
+                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 10, padding: "6px 8px" }}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedLoteRows.map((r, i) => (
-                            <tr key={i} className="agri-tr">
-                              <td className="agri-td">{fmtDate(r["Fecha"])}</td>
-                              <td className="agri-td">{r["Tipo item"]}</td>
-                              <td className="agri-td">{r["Concepto"]}</td>
-                              <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
-                              <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{r["U$S/Total"] === null ? "—" : fmtUSD2(r["U$S/Total"])}</td>
-                            </tr>
-                          ))}
+                          {selectedLoteRows.map((r, i) => {
+                            const prev = selectedLoteRows[i - 1];
+                            const sameFecha = prev && prev["Fecha"] === r["Fecha"];
+                            const sameRubro = sameFecha && prev["Tipo item"] === r["Tipo item"];
+                            const tdSm = { padding: "5px 8px", fontSize: 12 };
+                            return (
+                              <tr key={i} className="agri-tr" style={{ borderTop: !sameFecha && i > 0 ? "1px solid var(--ink)" : undefined }}>
+                                <td className="agri-td" style={{ ...tdSm, color: sameFecha ? "var(--line)" : "var(--ink)" }}>{sameFecha ? "″" : fmtDate(r["Fecha"])}</td>
+                                <td className="agri-td" style={{ ...tdSm, color: sameRubro ? "var(--line)" : "var(--ink-soft)" }}>{sameRubro ? "″" : r["Tipo item"]}</td>
+                                <td className="agri-td" style={tdSm}>{r["Concepto"]}</td>
+                                <td className="agri-td" style={{ ...tdSm, textAlign: "right" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
+                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", fontWeight: 600 }}>{r["U$S/Total"] === null ? "—" : fmtUSD2(r["U$S/Total"])}</td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
