@@ -453,7 +453,7 @@ export default function App() {
     return arr;
   }, [loteAgg, loteSort]);
   const maxCostoHa = Math.max(1, ...loteAgg.map((e) => e.costoHa));
-  const topLotesPorGasto = useMemo(() => [...loteAgg].sort((a, b) => b.total - a.total).slice(0, 12).map((e) => ({ name: `${e.campo} · L${e.lote}`, value: e.total })), [loteAgg]);
+  const topLotesPorGasto = useMemo(() => [...loteAgg].filter((e) => e.ha > 0).sort((a, b) => b.costoHa - a.costoHa).slice(0, 12).map((e) => ({ name: `${e.campo} · L${e.lote}`, value: e.costoHa })), [loteAgg]);
 
   // Detalle de un lote seleccionado
   const [selectedLoteKey, setSelectedLoteKey] = useState(null);
@@ -797,13 +797,13 @@ export default function App() {
 
             {/* Comparativo por lotes */}
             <div className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
-              <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Lotes con mayor gasto</div>
+              <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Lotes con mayor gasto por hectárea</div>
               <ResponsiveContainer width="100%" height={Math.max(180, topLotesPorGasto.length * 26)}>
-                <BarChart data={topLotesPorGasto} layout="vertical" margin={{ left: 10 }}>
+                <BarChart data={topLotesPorGasto} layout="vertical" margin={{ left: 10, right: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v / 1000) + "k"} axisLine={false} tickLine={false} />
-                  <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
-                  <Tooltip formatter={(v) => fmtUSD(v)} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                  <YAxis type="category" dataKey="name" width={190} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
                   <Bar dataKey="value" fill="#2F5B66" radius={[0, 3, 3, 0]} />
                 </BarChart>
               </ResponsiveContainer>
