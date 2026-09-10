@@ -342,7 +342,7 @@ export default function App() {
     const lotesSet = new Set(), camposSet = new Set(), cultivosSet = new Set();
     filtered.forEach((r) => {
       if (r["U$S/Total"] === null) sinPrecio++; else gasto += r["U$S/Total"];
-      const key = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}`;
+      const key = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}`;
       if (!supMap.has(key)) supMap.set(key, r["Sup.Cultivo"] || 0);
       if (r["Lote"]) lotesSet.add(`${r["Campo"]}|${r["Lote"]}`);
       if (r["Campo"]) camposSet.add(r["Campo"]);
@@ -368,7 +368,7 @@ export default function App() {
       const v = r["U$S/Total"] || 0;
       e.gasto += v;
       if (r["Tipo Det."] === "INSUMOS") e.insumos += v; else if (r["Tipo Det."] === "SERVICIOS") e.servicios += v;
-      const supKey = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}`;
+      const supKey = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}`;
       if (!seenSup.has(supKey)) { seenSup.add(supKey); e.ha += r["Sup.Cultivo"] || 0; }
     });
     return Array.from(m.entries()).map(([name, e]) => ({
@@ -410,7 +410,7 @@ export default function App() {
   const loteAgg = useMemo(() => {
     const m = new Map();
     filtered.forEach((r) => {
-      const key = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}`;
+      const key = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}`;
       if (!m.has(key)) {
         m.set(key, { campo: r["Campo"], lote: r["Lote"], cultivo: r["Cultivo"], variedad: r["Variedad"], ha: r["Sup.Cultivo"] || 0, insumos: 0, servicios: 0, total: 0 });
       }
@@ -442,10 +442,10 @@ export default function App() {
   // Detalle de un lote seleccionado
   const [selectedLoteKey, setSelectedLoteKey] = useState(null);
   const selectLote = (key) => setSelectedLoteKey((cur) => (cur === key ? null : key));
-  const selectedLoteInfo = useMemo(() => loteAgg.find((e) => `${e.campo}|${e.lote}|${e.cultivo}` === selectedLoteKey) || null, [loteAgg, selectedLoteKey]);
+  const selectedLoteInfo = useMemo(() => loteAgg.find((e) => `${e.campo}|${e.lote}|${e.cultivo}|${e.variedad}` === selectedLoteKey) || null, [loteAgg, selectedLoteKey]);
   const selectedLoteRows = useMemo(() => {
     if (!selectedLoteKey) return [];
-    return filtered.filter((r) => `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}` === selectedLoteKey)
+    return filtered.filter((r) => `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}` === selectedLoteKey)
       .slice().sort((a, b) => {
         const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
         if (fa !== fb) return fa < fb ? -1 : 1;
@@ -462,7 +462,7 @@ export default function App() {
   }, [selectedLoteRows]);
   // Si cambian los filtros generales y el lote seleccionado deja de existir, lo deseleccionamos
   useEffect(() => {
-    if (selectedLoteKey && !loteAgg.some((e) => `${e.campo}|${e.lote}|${e.cultivo}` === selectedLoteKey)) setSelectedLoteKey(null);
+    if (selectedLoteKey && !loteAgg.some((e) => `${e.campo}|${e.lote}|${e.cultivo}|${e.variedad}` === selectedLoteKey)) setSelectedLoteKey(null);
   }, [loteAgg, selectedLoteKey]);
 
   // Orden y paginación de tabla
@@ -772,7 +772,7 @@ export default function App() {
                   </thead>
                   <tbody>
                     {loteSorted.map((e, i) => {
-                      const key = `${e.campo}|${e.lote}|${e.cultivo}`;
+                      const key = `${e.campo}|${e.lote}|${e.cultivo}|${e.variedad}`;
                       const isSelected = key === selectedLoteKey;
                       return (
                       <tr key={i} className="agri-tr" onClick={() => selectLote(key)} style={{ cursor: "pointer", background: isSelected ? "rgba(184,132,46,0.14)" : undefined }}>
