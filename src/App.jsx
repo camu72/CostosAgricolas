@@ -48,6 +48,19 @@ if (typeof window !== "undefined" && !window.storage) {
 
 const STORAGE_KEY = "produccion-agricola-dataset-v1";
 const PAGE_SIZE = 30;
+// Columnas que pueden venir sin precio cargado (quedan en null). Firebase Realtime
+// Database borra los valores "null" dentro de un array al guardarlos (los trata
+// como una instrucción de "eliminar"), lo que descuadra la fila entera al leerla
+// de vuelta. Para evitarlo, estos nulls se codifican como "" antes de guardar y
+// se decodifican de nuevo a null al reconstruir las filas.
+const NULLABLE_COLS = new Set(["U$S/U", "U$S/Total"]);
+const encodeCell = (col, val) => (val === null && NULLABLE_COLS.has(col) ? "" : val);
+const decodeCell = (col, val) => (val === "" && NULLABLE_COLS.has(col) ? null : val);
+const rowsFromPayload = (payload) => payload.rows.map((arr) => {
+  const o = {};
+  payload.columns.forEach((c, i) => { o[c] = decodeCell(c, arr[i]); });
+  return o;
+});
 
 // Conexión a Firebase (solo si se completó firebaseConfig.js con datos reales)
 let cloudDb = null;
@@ -180,11 +193,7 @@ export default function App() {
         const res = await window.storage.get(STORAGE_KEY, false);
         if (res && res.value) {
           const payload = JSON.parse(res.value);
-          const objRows = payload.rows.map((arr) => {
-            const o = {};
-            payload.columns.forEach((c, i) => { o[c] = arr[i]; });
-            return o;
-          });
+          const objRows = rowsFromPayload(payload);
           setRows(objRows);
           setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length });
         }
@@ -201,11 +210,7 @@ export default function App() {
           (snapshot) => {
             const payload = snapshot.val();
             if (payload && payload.rows && payload.columns) {
-              const objRows = payload.rows.map((arr) => {
-                const o = {};
-                payload.columns.forEach((c, i) => { o[c] = arr[i]; });
-                return o;
-              });
+              const objRows = rowsFromPayload(payload);
               setRows(objRows);
               setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length });
             }
@@ -226,7 +231,7 @@ export default function App() {
 
   const persist = useCallback(async (normalizedRows, fileName) => {
     const columns = COLS;
-    const dataRows = normalizedRows.map((r) => columns.map((c) => r[c]));
+    const dataRows = normalizedRows.map((r) => columns.map((c) => encodeCell(c, r[c])));
     const payload = { columns, rows: dataRows, fileName, updatedAt: new Date().toISOString() };
 
     try {
