@@ -5,7 +5,7 @@ import { getDatabase, ref, onValue, set as dbSet } from "firebase/database";
 import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_PATH } from "./firebaseConfig.js";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Cell, Legend,
+  Tooltip, ResponsiveContainer, Cell, Legend, LabelList,
 } from "recharts";
 import {
   Upload, RefreshCw, Search, X, Sprout, MapPin, DollarSign, Ruler,
@@ -121,6 +121,30 @@ const monthLabel = (ym) => {
   const [y, m] = ym.split("-");
   const names = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
   return `${names[parseInt(m, 10) - 1]} ${y.slice(2)}`;
+};
+
+// Renderers de etiquetas dentro de las barras: se ocultan solos si no entra el
+// texto, para que nunca sobresalgan del área de la barra.
+const VerticalBarLabel = (props) => {
+  const { x, y, width, height, value } = props;
+  if (!value || height < 16) return null;
+  return (
+    <text x={x + width / 2} y={y + height / 2} textAnchor="middle" dominantBaseline="middle" fill="#fff" fontSize={11} fontWeight={700}>
+      {fmtUSD2(value)}
+    </text>
+  );
+};
+
+const HorizontalBarLabel = (props) => {
+  const { x, y, width, height, value } = props;
+  if (!value) return null;
+  const text = fmtUSD2(value);
+  if (width < text.length * 6.4 + 10) return null;
+  return (
+    <text x={x + width - 6} y={y + height / 2} textAnchor="end" dominantBaseline="middle" fill="#fff" fontSize={10} fontWeight={700}>
+      {text}
+    </text>
+  );
 };
 
 function normalizeRow(r) {
@@ -705,6 +729,7 @@ export default function App() {
                     <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
                     <Bar dataKey="costoHa" radius={[3, 3, 0, 0]}>
                       {costoHaPorCultivo.map((e, i) => <Cell key={i} fill={cultivoColor(e.name, i)} />)}
+                      <LabelList dataKey="costoHa" content={<VerticalBarLabel />} />
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -719,8 +744,12 @@ export default function App() {
                     <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
                     <Tooltip formatter={(v, name) => [fmtUSD2(v) + "/ha", name === "insumosHa" ? "Insumos" : "Servicios"]} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
                     <Legend wrapperStyle={{ fontSize: 11 }} formatter={(v) => (v === "insumosHa" ? "Insumos" : "Servicios")} />
-                    <Bar dataKey="insumosHa" stackId="costo" fill="#4B6B3A" radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="serviciosHa" stackId="costo" fill="#B8842E" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="insumosHa" stackId="costo" fill="#4B6B3A" radius={[0, 0, 0, 0]}>
+                      <LabelList dataKey="insumosHa" content={<VerticalBarLabel />} />
+                    </Bar>
+                    <Bar dataKey="serviciosHa" stackId="costo" fill="#B8842E" radius={[3, 3, 0, 0]}>
+                      <LabelList dataKey="serviciosHa" content={<VerticalBarLabel />} />
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -735,7 +764,9 @@ export default function App() {
                     <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
                     {cultivosConHa.map((c, i) => (
-                      <Bar key={c} dataKey={c} name={c} fill={cultivoColor(c, i)} radius={[0, 3, 3, 0]} />
+                      <Bar key={c} dataKey={c} name={c} fill={cultivoColor(c, i)} radius={[0, 3, 3, 0]}>
+                        <LabelList dataKey={c} content={<HorizontalBarLabel />} />
+                      </Bar>
                     ))}
                   </BarChart>
                 </ResponsiveContainer>
