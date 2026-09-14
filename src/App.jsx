@@ -894,14 +894,14 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="agri-detail-grid" style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) minmax(280px, 1.3fr)", gap: 16 }}>
+                <div className="agri-detail-grid" style={{ display: "grid", gridTemplateColumns: "minmax(190px, 0.8fr) minmax(320px, 1.8fr)", gap: 16 }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Composición del costo por rubro</div>
                     <ResponsiveContainer width="100%" height={Math.max(160, selectedLoteByItem.length * 26)}>
                       <BarChart data={selectedLoteByItem} layout="vertical" margin={{ left: 10 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
                         <XAxis type="number" tick={{ fontSize: 10, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
-                        <YAxis type="category" dataKey="name" width={125} tick={{ fontSize: 10, fill: "#2B2118" }} axisLine={false} tickLine={false} />
+                        <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 10, fill: "#2B2118" }} axisLine={false} tickLine={false} />
                         <Tooltip formatter={(v) => fmtUSD2(v)} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
                         <Bar dataKey="value" radius={[0, 3, 3, 0]}>
                           {selectedLoteByItem.map((_, i) => <Cell key={i} fill={FALLBACK_COLORS[i % FALLBACK_COLORS.length]} />)}
@@ -912,10 +912,10 @@ export default function App() {
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Movimientos del lote</div>
                     <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
                         <thead>
                           <tr>
-                            {["Fecha / Labor", "Rubro", "Concepto", "Cant.", "USD"].map((h) => (
+                            {["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"].map((h) => (
                               <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px" }}>{h}</th>
                             ))}
                           </tr>
@@ -927,6 +927,8 @@ export default function App() {
                             const sameRubro = sameFechaLabor && prev["Tipo item"] === r["Tipo item"];
                             const tdSm = { padding: "4px 7px", fontSize: 11 };
                             const tdLabor = { padding: "4px 7px", fontSize: 9, color: "var(--ink-soft)", fontWeight: 400 };
+                            const ha = selectedLoteInfo.ha;
+                            const dosis = ha > 0 ? r["Cantidad"] / ha : null;
                             return (
                               <tr key={i} className="agri-tr" style={{ borderTop: !sameFechaLabor && i > 0 ? "1px solid var(--ink)" : undefined }}>
                                 <td className="agri-td" style={{ ...tdSm, color: sameFechaLabor ? "var(--line)" : "var(--ink)" }}>
@@ -940,6 +942,7 @@ export default function App() {
                                 <td className="agri-td" style={{ ...tdLabor, color: sameRubro ? "var(--line)" : "var(--ink-soft)" }}>{sameRubro ? "″" : r["Tipo item"]}</td>
                                 <td className="agri-td" style={tdLabor}>{r["Concepto"]}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
+                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", color: "var(--ink-soft)" }}>{dosis === null ? "—" : `${fmtNum(dosis, 2)} ${r["Unid."]}/ha`}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right", fontWeight: 600 }}>{r["U$S/Total"] === null ? "—" : fmtUSD2(r["U$S/Total"])}</td>
                               </tr>
                             );
