@@ -782,7 +782,9 @@ export default function App() {
                   <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
                   <YAxis type="category" dataKey="name" width={190} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
                   <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
-                  <Bar dataKey="value" fill="#2F5B66" radius={[0, 3, 3, 0]} />
+                  <Bar dataKey="value" fill="#2F5B66" radius={[0, 3, 3, 0]}>
+                    <LabelList dataKey="value" content={<HorizontalBarLabel />} />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
