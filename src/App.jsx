@@ -147,6 +147,19 @@ const HorizontalBarLabel = (props) => {
   );
 };
 
+const LoteCostoHaTooltip = ({ active, payload }) => {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div style={{ background: "#FCFAF2", border: "1px solid #DCD2B8", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
+      <div style={{ fontWeight: 600, marginBottom: 3 }}>{d.campo} · Lote {d.lote} · {d.cultivo}</div>
+      {d.variedad && <div style={{ color: "var(--ink-soft)" }}>{d.variedad}</div>}
+      <div style={{ color: "var(--ink-soft)" }}>{fmtNum(d.ha, 1)} ha</div>
+      <div style={{ fontWeight: 600, marginTop: 2 }}>{fmtUSD2(d.value)}/ha</div>
+    </div>
+  );
+};
+
 function normalizeRow(r) {
   return {
     "Admin": str(r["Admin"]),
@@ -466,7 +479,10 @@ export default function App() {
     return arr;
   }, [loteAgg, loteSort]);
   const maxCostoHa = Math.max(1, ...loteAgg.map((e) => e.costoHa));
-  const topLotesPorGasto = useMemo(() => [...loteAgg].filter((e) => e.ha > 0).sort((a, b) => b.costoHa - a.costoHa).slice(0, 12).map((e) => ({ name: `${e.campo} · L${e.lote}`, value: e.costoHa })), [loteAgg]);
+  const topLotesPorGasto = useMemo(() => [...loteAgg].filter((e) => e.ha > 0).sort((a, b) => b.costoHa - a.costoHa).slice(0, 12).map((e) => ({
+    name: `${e.campo} · L${e.lote} · ${e.cultivo}`,
+    value: e.costoHa, campo: e.campo, lote: e.lote, cultivo: e.cultivo, variedad: e.variedad, ha: e.ha,
+  })), [loteAgg]);
 
   // Detalle de un lote seleccionado
   const [selectedLoteKey, setSelectedLoteKey] = useState(null);
@@ -780,8 +796,8 @@ export default function App() {
                 <BarChart data={topLotesPorGasto} layout="vertical" margin={{ left: 10, right: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
-                  <YAxis type="category" dataKey="name" width={190} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
-                  <Tooltip formatter={(v) => fmtUSD2(v) + "/ha"} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                  <YAxis type="category" dataKey="name" width={230} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
+                  <Tooltip content={<LoteCostoHaTooltip />} />
                   <Bar dataKey="value" fill="#2F5B66" radius={[0, 3, 3, 0]}>
                     <LabelList dataKey="value" content={<HorizontalBarLabel />} />
                   </Bar>
