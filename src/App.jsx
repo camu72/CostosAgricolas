@@ -312,12 +312,36 @@ export default function App() {
       setMeta(newMeta);
       setPage(1);
       await persist(normalized, file.name);
+
+      // Si los filtros activos dejan el dashboard vacío con los datos nuevos, los limpiamos
+      const q = search.trim().toLowerCase();
+      const wouldMatch = normalized.some((r) => {
+        if (cultivo !== "Todos" && r["Cultivo"] !== cultivo) return false;
+        if (campo !== "Todos" && r["Campo"] !== campo) return false;
+        if (lote !== "Todos") {
+          const [lc, ll] = lote.split("::");
+          if (r["Campo"] !== lc || r["Lote"] !== ll) return false;
+        }
+        if (tipoDet !== "Todos" && r["Tipo Det."] !== tipoDet) return false;
+        if (tipoItem !== "Todos" && r["Tipo item"] !== tipoItem) return false;
+        if (desde && r["Fecha"] && r["Fecha"] < desde) return false;
+        if (hasta && r["Fecha"] && r["Fecha"] > hasta) return false;
+        if (q) {
+          const hay = `${r["Concepto"]} ${r["Origen"]} ${r["Lote"]} ${r["OTA"]} ${r["Variedad"]} ${r["Tipo item"]}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+      if (!wouldMatch) {
+        setCultivo("Todos"); setCampo("Todos"); setLote("Todos"); setTipoDet("Todos");
+        setTipoItem("Todos"); setDesde(""); setHasta(""); setSearch("");
+      }
     } catch (e) {
       setError("No pude leer el archivo. Verificá que sea un Excel exportado del mismo formato (" + e.message + ")");
     } finally {
       setParsing(false);
     }
-  }, [persist]);
+  }, [persist, cultivo, campo, lote, tipoDet, tipoItem, desde, hasta, search]);
 
   const onDrop = (e) => {
     e.preventDefault(); setDragOver(false);
@@ -507,8 +531,8 @@ export default function App() {
   }, [selectedLoteRows]);
 
   // Resumen agrupado por Rubro > Concepto para la solapa "Resumen por rubro"
-  const [loteDetailTab, setLoteDetailTab] = useState("movimientos");
-  useEffect(() => { setLoteDetailTab("movimientos"); }, [selectedLoteKey]);
+  const [loteDetailTab, setLoteDetailTab] = useState("resumen");
+  useEffect(() => { setLoteDetailTab("resumen"); }, [selectedLoteKey]);
   const selectedLoteSummary = useMemo(() => {
     const rubroMap = new Map();
     selectedLoteRows.forEach((r) => {
@@ -940,15 +964,15 @@ export default function App() {
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                       <button
-                        className="agri-chip" data-active={loteDetailTab === "movimientos"}
-                        style={{ padding: "3px 10px", fontSize: 12 }}
-                        onClick={() => setLoteDetailTab("movimientos")}
-                      >Movimientos</button>
-                      <button
                         className="agri-chip" data-active={loteDetailTab === "resumen"}
                         style={{ padding: "3px 10px", fontSize: 12 }}
                         onClick={() => setLoteDetailTab("resumen")}
                       >Resumen por rubro</button>
+                      <button
+                        className="agri-chip" data-active={loteDetailTab === "movimientos"}
+                        style={{ padding: "3px 10px", fontSize: 12 }}
+                        onClick={() => setLoteDetailTab("movimientos")}
+                      >Movimientos</button>
                     </div>
                     {loteDetailTab === "movimientos" ? (
                     <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
