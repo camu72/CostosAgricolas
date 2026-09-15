@@ -10,6 +10,7 @@ import {
 import {
   Upload, RefreshCw, Search, X, Sprout, MapPin, DollarSign, Ruler,
   ChevronLeft, ChevronRight, ArrowUpDown, Trash2, FileSpreadsheet, AlertCircle, Eye,
+  ChevronDown, ChevronUp, ClipboardCheck,
   Cloud, CloudOff,
 } from "lucide-react";
 
@@ -163,7 +164,7 @@ const LoteCostoHaTooltip = ({ active, payload }) => {
 function normalizeRow(r) {
   return {
     "Admin": str(r["Admin"]),
-    "": str(r[""]),
+    "Campaña": str(r["Campaña"]),
     "Campo": str(r["Campo"]),
     "Lote": str(r["Lote"]),
     "Sup.Lote": num(r["Sup.Lote"]),
@@ -472,6 +473,34 @@ export default function App() {
     return rows.slice(0, 8);
   }, [filtered, cultivosConHa, haPorCultivoMap]);
 
+  // Control de datos: detecta filas con problemas que podrían ensuciar el dashboard
+  // (se calcula sobre TODO el dataset, no solo lo filtrado, para dar una foto completa
+  // de lo que conviene corregir en el Excel de origen).
+  const [showDataQuality, setShowDataQuality] = useState(false);
+  const dataQuality = useMemo(() => {
+    const totals = { sinPrecio: 0, precioCero: 0, sinSuperficie: 0, sinCultivo: 0, sinCampo: 0, sinConcepto: 0, filasConProblemas: 0 };
+    const groups = new Map();
+    rows.forEach((r) => {
+      const problems = [];
+      if (r["U$S/Total"] === null) { problems.push("Sin precio"); totals.sinPrecio++; }
+      else if (r["U$S/Total"] === 0 && r["Cantidad"] > 0) { problems.push("Precio en $0"); totals.precioCero++; }
+      if (!r["Sup.Cultivo"]) { problems.push("Sin superficie"); totals.sinSuperficie++; }
+      if (!r["Cultivo"]) { problems.push("Sin cultivo"); totals.sinCultivo++; }
+      if (!r["Campo"]) { problems.push("Sin campo"); totals.sinCampo++; }
+      if (!r["Concepto"]) { problems.push("Sin concepto"); totals.sinConcepto++; }
+      if (!problems.length) return;
+      totals.filasConProblemas++;
+      const key = `${r["Tipo item"] || "(sin rubro)"}|${r["Concepto"] || "(sin concepto)"}`;
+      if (!groups.has(key)) groups.set(key, { rubro: r["Tipo item"] || "(sin rubro)", concepto: r["Concepto"] || "(sin concepto)", unid: r["Unid."], count: 0, cant: 0, problemsSet: new Set() });
+      const g = groups.get(key);
+      g.count += 1;
+      g.cant += r["Cantidad"] || 0;
+      problems.forEach((p) => g.problemsSet.add(p));
+    });
+    const list = Array.from(groups.values()).map((g) => ({ ...g, problems: Array.from(g.problemsSet) })).sort((a, b) => b.count - a.count);
+    return { totals, list };
+  }, [rows]);
+
   // Comparativo por lotes (agrupa Campo + Lote + Cultivo dentro de lo ya filtrado)
   const loteAgg = useMemo(() => {
     const m = new Map();
@@ -665,7 +694,7 @@ export default function App() {
         {/* Masthead */}
         <div className="agri-masthead">
           <div>
-            <div className="agri-title agri-serif">Costos Agrícolas</div>
+            <div className="agri-title agri-serif">Campaña C25/26 · Producción</div>
             <div className="agri-sub">
               {meta ? (
                 <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
@@ -1104,6 +1133,75 @@ export default function App() {
                   <button className="agri-btn agri-btn-outline" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} style={{ opacity: page >= totalPages ? 0.4 : 1 }}><ChevronRight size={14} /></button>
                 </div>
               </div>
+            </div>
+
+            {/* Control de datos: colapsado por defecto, no invasivo */}
+            <div className="agri-card" style={{ padding: 16, marginTop: 16 }}>
+              <button
+                onClick={() => setShowDataQuality((v) => !v)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", background: "none", border: "none", cursor: "pointer", padding: 0, font: "inherit", color: "inherit" }}
+              >
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <ClipboardCheck size={16} color={dataQuality.totals.filasConProblemas > 0 ? "var(--rust)" : "var(--green)"} />
+                  <span className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Control de datos</span>
+                  {dataQuality.totals.filasConProblemas > 0 ? (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "var(--rust)", borderRadius: 999, padding: "2px 9px" }}>
+                      {fmtNum(dataQuality.totals.filasConProblemas)} filas para revisar
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "var(--green)", borderRadius: 999, padding: "2px 9px" }}>Sin observaciones</span>
+                  )}
+                </span>
+                {showDataQuality ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+              </button>
+
+              {showDataQuality && (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontSize: 12, color: "var(--ink-soft)", marginBottom: 12, maxWidth: 720 }}>
+                    Estos casos no rompen el dashboard (se tratan como $0 o se excluyen de los promedios), pero conviene corregirlos en el Excel de origen para que los números reflejen la realidad. Se calculan sobre todos los datos cargados, sin importar los filtros de arriba.
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+                    {[
+                      ["Sin precio", dataQuality.totals.sinPrecio],
+                      ["Precio en $0", dataQuality.totals.precioCero],
+                      ["Sin superficie", dataQuality.totals.sinSuperficie],
+                      ["Sin cultivo", dataQuality.totals.sinCultivo],
+                      ["Sin campo", dataQuality.totals.sinCampo],
+                      ["Sin concepto", dataQuality.totals.sinConcepto],
+                    ].filter(([, n]) => n > 0).map(([label, n]) => (
+                      <div key={label} style={{ fontSize: 12, padding: "5px 11px", borderRadius: 999, border: "1px solid var(--line)", background: "var(--paper)" }}>
+                        <strong>{fmtNum(n)}</strong> {label.toLowerCase()}
+                      </div>
+                    ))}
+                  </div>
+                  {dataQuality.list.length === 0 ? (
+                    <div style={{ fontSize: 13, color: "var(--ink-soft)" }}>No se encontraron problemas en los datos cargados. 🎉</div>
+                  ) : (
+                    <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+                        <thead>
+                          <tr>
+                            {["Rubro", "Concepto", "Problema", "Filas", "Cantidad total"].map((h) => (
+                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dataQuality.list.map((g, i) => (
+                            <tr key={i} className="agri-tr">
+                              <td className="agri-td">{g.rubro}</td>
+                              <td className="agri-td">{g.concepto}</td>
+                              <td className="agri-td" style={{ color: "var(--rust)" }}>{g.problems.join(", ")}</td>
+                              <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(g.count)}</td>
+                              <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(g.cant, 1)} {g.unid}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </>
         )}
