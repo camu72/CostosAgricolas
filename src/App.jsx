@@ -163,7 +163,7 @@ const LoteCostoHaTooltip = ({ active, payload }) => {
 function normalizeRow(r) {
   return {
     "Admin": str(r["Admin"]),
-    "Campaña": str(r["Campaña"]),
+    "": str(r[""]),
     "Campo": str(r["Campo"]),
     "Lote": str(r["Lote"]),
     "Sup.Lote": num(r["Sup.Lote"]),
@@ -665,7 +665,7 @@ export default function App() {
         {/* Masthead */}
         <div className="agri-masthead">
           <div>
-            <div className="agri-title agri-serif">Campaña C25/26 · Producción</div>
+            <div className="agri-title agri-serif">Costos Agrícolas</div>
             <div className="agri-sub">
               {meta ? (
                 <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
