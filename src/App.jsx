@@ -505,6 +505,34 @@ export default function App() {
     selectedLoteRows.forEach((r) => { if (!r["Tipo item"]) return; m.set(r["Tipo item"], (m.get(r["Tipo item"]) || 0) + (r["U$S/Total"] || 0)); });
     return Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   }, [selectedLoteRows]);
+
+  // Resumen agrupado por Rubro > Concepto para la solapa "Resumen por rubro"
+  const [loteDetailTab, setLoteDetailTab] = useState("movimientos");
+  useEffect(() => { setLoteDetailTab("movimientos"); }, [selectedLoteKey]);
+  const selectedLoteSummary = useMemo(() => {
+    const rubroMap = new Map();
+    selectedLoteRows.forEach((r) => {
+      const rubro = r["Tipo item"] || "(sin rubro)";
+      if (!rubroMap.has(rubro)) rubroMap.set(rubro, { items: 0, cant: 0, costo: 0, conceptos: new Map() });
+      const rg = rubroMap.get(rubro);
+      rg.items += 1; rg.cant += r["Cantidad"] || 0; rg.costo += r["U$S/Total"] || 0;
+      const concepto = r["Concepto"] || "(sin concepto)";
+      if (!rg.conceptos.has(concepto)) rg.conceptos.set(concepto, { items: 0, cant: 0, costo: 0, unid: r["Unid."], sumUnit: 0, countUnit: 0 });
+      const cg = rg.conceptos.get(concepto);
+      cg.items += 1; cg.cant += r["Cantidad"] || 0; cg.costo += r["U$S/Total"] || 0;
+      if (r["U$S/U"] !== null) { cg.sumUnit += r["U$S/U"]; cg.countUnit += 1; }
+    });
+    const ha = selectedLoteInfo ? selectedLoteInfo.ha : 0;
+    return Array.from(rubroMap.entries()).map(([rubro, rg]) => ({
+      rubro, items: rg.items, cant: rg.cant, costo: rg.costo, costoHa: ha > 0 ? rg.costo / ha : null,
+      conceptos: Array.from(rg.conceptos.entries()).map(([concepto, cg]) => ({
+        concepto, unid: cg.unid, items: cg.items, cant: cg.cant, costo: cg.costo,
+        unitPrice: cg.countUnit > 0 ? cg.sumUnit / cg.countUnit : null,
+        dosisHa: ha > 0 ? cg.cant / ha : null,
+        costoHa: ha > 0 ? cg.costo / ha : null,
+      })).sort((a, b) => b.costo - a.costo),
+    })).sort((a, b) => b.costo - a.costo);
+  }, [selectedLoteRows, selectedLoteInfo]);
   // Si cambian los filtros generales y el lote seleccionado deja de existir, lo deseleccionamos
   useEffect(() => {
     if (selectedLoteKey && !loteAgg.some((e) => `${e.campo}|${e.lote}|${e.cultivo}|${e.variedad}` === selectedLoteKey)) setSelectedLoteKey(null);
@@ -910,7 +938,19 @@ export default function App() {
                     </ResponsiveContainer>
                   </div>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Movimientos del lote</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                      <button
+                        className="agri-chip" data-active={loteDetailTab === "movimientos"}
+                        style={{ padding: "3px 10px", fontSize: 12 }}
+                        onClick={() => setLoteDetailTab("movimientos")}
+                      >Movimientos</button>
+                      <button
+                        className="agri-chip" data-active={loteDetailTab === "resumen"}
+                        style={{ padding: "3px 10px", fontSize: 12 }}
+                        onClick={() => setLoteDetailTab("resumen")}
+                      >Resumen por rubro</button>
+                    </div>
+                    {loteDetailTab === "movimientos" ? (
                     <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
                       <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
                         <thead>
@@ -950,6 +990,45 @@ export default function App() {
                         </tbody>
                       </table>
                     </div>
+                    ) : (
+                    <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 6 }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 620 }}>
+                        <thead>
+                          <tr>
+                            {["Rubro / Concepto", "$/U", "Dosis/ha", "Items", "Cant.", "Costo", "Costo/ha"].map((h) => (
+                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px", textAlign: h === "Rubro / Concepto" ? "left" : "right" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedLoteSummary.map((rg, ri) => (
+                            <React.Fragment key={ri}>
+                              <tr className="agri-tr" style={{ background: "rgba(75,107,58,0.07)" }}>
+                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, fontWeight: 700 }}>{rg.rubro}</td>
+                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>
+                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>
+                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.items}</td>
+                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtNum(rg.cant, 1)}</td>
+                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtUSD2(rg.costo)}</td>
+                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.costoHa === null ? "—" : fmtUSD2(rg.costoHa)}</td>
+                              </tr>
+                              {rg.conceptos.map((cg, ci) => (
+                                <tr key={ci} className="agri-tr">
+                                  <td className="agri-td" style={{ padding: "4px 7px 4px 18px", fontSize: 10, color: "var(--ink-soft)" }}>{cg.concepto}</td>
+                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.unitPrice === null ? "—" : fmtUSD2(cg.unitPrice)}</td>
+                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.dosisHa === null ? "—" : `${fmtNum(cg.dosisHa, 2)} ${cg.unid}/ha`}</td>
+                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.items}</td>
+                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtNum(cg.cant, 1)} {cg.unid}</td>
+                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtUSD2(cg.costo)}</td>
+                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.costoHa === null ? "—" : fmtUSD2(cg.costoHa)}</td>
+                                </tr>
+                              ))}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    )}
                   </div>
                 </div>
               </div>
