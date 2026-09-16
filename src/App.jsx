@@ -182,8 +182,10 @@ function normalizeRow(r) {
     "Cant.Afect": num(r["Cant.Afect"]),
     "Cantidad": num(r["Cantidad"]),
     "Unid.": str(r["Unid."]),
-    "U$S/U": numOrNull(r["U$S/U"]),
-    "U$S/Total": numOrNull(r["U$S/Total"]),
+    // El Excel de origen renombró estas dos columnas; aceptamos ambos nombres
+    // por si en algún momento se sube un archivo con la nomenclatura anterior.
+    "U$S/U": numOrNull(r["Precio/U"] !== undefined ? r["Precio/U"] : r["U$S/U"]),
+    "U$S/Total": numOrNull(r["Total"] !== undefined ? r["Total"] : r["U$S/Total"]),
   };
 }
 
