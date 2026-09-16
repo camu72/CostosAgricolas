@@ -645,18 +645,27 @@ export default function App() {
   }, [filtered, sort]);
 
   // Exporta a Excel los registros filtrados, con las mismas 21 columnas del archivo original
+  // Columnas y orden para la exportación a Excel: distinto del orden interno (COLS).
+  // Excluye "Cant.Orig." y "U.Serv.", y mueve/renombra "Cant.Afect" -> "Sup.Origen"
+  // justo después de "Origen".
+  const EXPORT_COLUMNS = [
+    ["Admin", "Admin"], ["Campaña", "Campaña"], ["Campo", "Campo"], ["Lote", "Lote"], ["Sup.Lote", "Sup.Lote"],
+    ["Cultivo", "Cultivo"], ["Variedad", "Variedad"], ["Sup.Cultivo", "Sup.Cultivo"], ["Fecha", "Fecha"], ["OTA", "OTA"],
+    ["Origen", "Origen"], ["Cant.Afect", "Sup.Origen"], ["Tipo Det.", "Tipo Det."], ["Tipo item", "Tipo item"],
+    ["Concepto", "Concepto"], ["Cantidad", "Cantidad"], ["Unid.", "Unid."], ["U$S/U", "U$S/U"], ["U$S/Total", "U$S/Total"],
+  ];
   const exportToExcel = useCallback(() => {
     const data = sorted.map((r) => {
       const o = {};
-      COLS.forEach((c) => {
-        let v = r[c];
-        if (c === "Fecha") v = fmtDate(v);
+      EXPORT_COLUMNS.forEach(([srcKey, header]) => {
+        let v = r[srcKey];
+        if (srcKey === "Fecha") v = fmtDate(v);
         if (v === null) v = "";
-        o[c] = v;
+        o[header] = v;
       });
       return o;
     });
-    const ws = XLSX.utils.json_to_sheet(data, { header: COLS });
+    const ws = XLSX.utils.json_to_sheet(data, { header: EXPORT_COLUMNS.map(([, h]) => h) });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Movimientos");
     const fecha = new Date().toISOString().slice(0, 10);
