@@ -10,7 +10,7 @@ import {
 import {
   Upload, RefreshCw, Search, X, Sprout, MapPin, DollarSign, Ruler,
   ChevronLeft, ChevronRight, ArrowUpDown, Trash2, FileSpreadsheet, AlertCircle, Eye,
-  ChevronDown, ChevronUp, ClipboardCheck,
+  ChevronDown, ChevronUp, ClipboardCheck, Download,
   Cloud, CloudOff,
 } from "lucide-react";
 
@@ -477,6 +477,43 @@ export default function App() {
   // (se calcula sobre TODO el dataset, no solo lo filtrado, para dar una foto completa
   // de lo que conviene corregir en el Excel de origen).
   const [showDataQuality, setShowDataQuality] = useState(false);
+  // Precios y consumo por ítem (Rubro + Concepto), respetando los filtros activos
+  const [itemSort, setItemSort] = useState({ key: "costo", dir: "desc" });
+  const toggleItemSort = (key) => setItemSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
+  const itemsSummary = useMemo(() => {
+    const m = new Map();
+    filtered.forEach((r) => {
+      const concepto = r["Concepto"] || "(sin concepto)";
+      const key = `${r["Tipo item"] || "(sin rubro)"}|${concepto}`;
+      if (!m.has(key)) m.set(key, { rubro: r["Tipo item"] || "(sin rubro)", concepto, unid: r["Unid."], cant: 0, costo: 0, sumUnit: 0, countUnit: 0, movimientos: 0 });
+      const e = m.get(key);
+      e.movimientos += 1;
+      e.cant += r["Cantidad"] || 0;
+      e.costo += r["U$S/Total"] || 0;
+      if (r["U$S/U"] !== null) { e.sumUnit += r["U$S/U"]; e.countUnit += 1; }
+    });
+    return Array.from(m.values()).map((e) => ({
+      rubro: e.rubro, concepto: e.concepto, unid: e.unid, movimientos: e.movimientos,
+      cant: e.cant, costo: e.costo, precioProm: e.countUnit > 0 ? e.sumUnit / e.countUnit : null,
+    }));
+  }, [filtered]);
+  const itemsSorted = useMemo(() => {
+    const arr = [...itemsSummary];
+    const { key, dir } = itemSort;
+    arr.sort((a, b) => {
+      let va = a[key], vb = b[key];
+      if (va === null) va = dir === "asc" ? Infinity : -Infinity;
+      if (vb === null) vb = dir === "asc" ? Infinity : -Infinity;
+      if (typeof va === "string") { va = va.toLowerCase(); vb = String(vb).toLowerCase(); }
+      if (va < vb) return dir === "asc" ? -1 : 1;
+      if (va > vb) return dir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return arr;
+  }, [itemsSummary, itemSort]);
+
+  // Exporta a Excel los registros filtrados, con las mismas 21 columnas del archivo original
+
   const dataQuality = useMemo(() => {
     const totals = { sinPrecio: 0, precioCero: 0, sinSuperficie: 0, sinCultivo: 0, sinCampo: 0, sinConcepto: 0, filasConProblemas: 0 };
     const groups = new Map();
@@ -606,6 +643,25 @@ export default function App() {
     });
     return arr;
   }, [filtered, sort]);
+
+  // Exporta a Excel los registros filtrados, con las mismas 21 columnas del archivo original
+  const exportToExcel = useCallback(() => {
+    const data = sorted.map((r) => {
+      const o = {};
+      COLS.forEach((c) => {
+        let v = r[c];
+        if (c === "Fecha") v = fmtDate(v);
+        if (v === null) v = "";
+        o[c] = v;
+      });
+      return o;
+    });
+    const ws = XLSX.utils.json_to_sheet(data, { header: COLS });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Movimientos");
+    const fecha = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `movimientos_filtrados_${fecha}.xlsx`);
+  }, [sorted]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -1086,11 +1142,53 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* Precios y consumo por ítem */}
+            <div className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
+              <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Precios y consumo por ítem</div>
+                <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(itemsSorted.length)} ítems · según filtros de arriba</div>
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
+                  <thead>
+                    <tr>
+                      {[["rubro", "Rubro"], ["concepto", "Concepto"], ["precioProm", "Precio prom."], ["cant", "Cantidad total"], ["costo", "Costo total"], ["movimientos", "Movs."]].map(([key, label]) => (
+                        <th key={key} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)" }} onClick={() => toggleItemSort(key)}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                            {label} {itemSort.key === key && <ArrowUpDown size={11} />}
+                          </span>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itemsSorted.map((e, i) => (
+                      <tr key={i} className="agri-tr">
+                        <td className="agri-td">{e.rubro}</td>
+                        <td className="agri-td">{e.concepto}</td>
+                        <td className="agri-td" style={{ textAlign: "right" }}>{e.precioProm === null ? "—" : fmtUSD2(e.precioProm)}</td>
+                        <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.cant, 1)} {e.unid}</td>
+                        <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{fmtUSD2(e.costo)}</td>
+                        <td className="agri-td" style={{ textAlign: "right", color: "var(--ink-soft)" }}>{e.movimientos}</td>
+                      </tr>
+                    ))}
+                    {itemsSorted.length === 0 && (
+                      <tr><td className="agri-td" colSpan={6} style={{ textAlign: "center", padding: 30, color: "var(--ink-soft)" }}>Ningún ítem coincide con los filtros aplicados.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {/* Tabla */}
             <div className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Detalle de movimientos</div>
-                <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(sorted.length)} registros filtrados</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(sorted.length)} registros filtrados</span>
+                  <button className="agri-btn agri-btn-outline" onClick={exportToExcel}><Download size={13} /> Exportar a Excel</button>
+                </div>
               </div>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
