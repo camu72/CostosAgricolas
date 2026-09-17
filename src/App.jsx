@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, onValue, set as dbSet } from "firebase/database";
-import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_PATH } from "./firebaseConfig.js";
+import { getDatabase, ref, onValue, get, set as dbSet } from "firebase/database";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "firebase/auth";
+import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./firebaseConfig.js";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, Legend, LabelList,
@@ -11,7 +12,7 @@ import {
   Upload, RefreshCw, Search, X, Sprout, MapPin, DollarSign, Ruler,
   ChevronLeft, ChevronRight, ArrowUpDown, Trash2, FileSpreadsheet, AlertCircle, Eye,
   ChevronDown, ChevronUp, ClipboardCheck, Download,
-  Cloud, CloudOff,
+  Cloud, CloudOff, LogOut, Plus, ArrowLeft,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,9 @@ if (typeof window !== "undefined" && !window.storage) {
   };
 }
 
-const STORAGE_KEY = "produccion-agricola-dataset-v1";
+// El caché local es por cliente, para no mezclar datos de distintos clientes
+// en el mismo navegador (ej. si el admin revisa varios seguidos).
+const STORAGE_KEY_PREFIX = "produccion-agricola-dataset-v1";
 const PAGE_SIZE = 30;
 // Columnas que pueden venir sin precio cargado (quedan en null). Firebase Realtime
 // Database borra los valores "null" dentro de un array al guardarlos (los trata
@@ -65,10 +68,12 @@ const rowsFromPayload = (payload) => payload.rows.map((arr) => {
 
 // Conexión a Firebase (solo si se completó firebaseConfig.js con datos reales)
 let cloudDb = null;
+let cloudAuth = null;
 if (CLOUD_SYNC_ENABLED) {
   try {
     const fbApp = initializeApp(firebaseConfig);
     cloudDb = getDatabase(fbApp);
+    cloudAuth = getAuth(fbApp);
   } catch (e) {
     console.error("No se pudo inicializar Firebase:", e);
   }
@@ -77,6 +82,77 @@ if (CLOUD_SYNC_ENABLED) {
 const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B" };
 const FALLBACK_COLORS = ["#5B7C4B", "#C68F41", "#35606B", "#8A5A3B", "#7C8A4B", "#A1462F"];
 const cultivoColor = (name, i) => CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
+
+// Estilos compartidos por toda la app (dashboard, login y panel de admin)
+const AGRI_STYLES = `
+  .agri-root {
+    --paper: #F6F1E2;
+    --paper-raised: #FCFAF2;
+    --ink: #2B2118;
+    --ink-soft: #6B5E4F;
+    --line: #DCD2B8;
+    --green: #4B6B3A;
+    --gold: #B8842E;
+    --teal: #2F5B66;
+    --rust: #A1462F;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+    padding: 20px 16px 60px;
+  }
+  .agri-root * { box-sizing: border-box; }
+  .agri-serif { font-family: 'Inter', system-ui, sans-serif; font-weight: 600; letter-spacing: -0.005em; }
+  .agri-shell { max-width: 1180px; margin: 0 auto; }
+  .agri-masthead {
+    display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+    border-bottom: 2px solid var(--ink); padding-bottom: 14px; margin-bottom: 22px; flex-wrap: wrap;
+  }
+  .agri-title { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; font-family: 'Inter', system-ui, sans-serif; }
+  .agri-sub { color: var(--ink-soft); font-size: 13px; margin-top: 4px; }
+  .agri-card {
+    background: var(--paper-raised); border: 1px solid var(--line); border-radius: 6px;
+  }
+  .agri-btn {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600;
+    padding: 8px 14px; border-radius: 5px; border: 1px solid var(--ink); background: var(--ink); color: var(--paper);
+    cursor: pointer; transition: opacity .15s ease;
+  }
+  .agri-btn:hover { opacity: .85; }
+  .agri-btn-outline {
+    background: transparent; color: var(--ink); border: 1px solid var(--line);
+  }
+  .agri-btn-outline:hover { border-color: var(--ink); opacity: 1; }
+  .agri-input, .agri-select {
+    background: var(--paper-raised); border: 1px solid var(--line); border-radius: 5px;
+    padding: 8px 10px; font-size: 13px; color: var(--ink); font-family: 'Inter', sans-serif;
+  }
+  .agri-input:focus, .agri-select:focus { outline: 2px solid var(--teal); outline-offset: 1px; border-color: var(--teal); }
+  .agri-chip {
+    font-size: 13px; font-weight: 600; padding: 6px 13px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--paper-raised); cursor: pointer; color: var(--ink-soft);
+  }
+  .agri-chip[data-active="true"] { background: var(--green); border-color: var(--green); color: #fff; }
+  .agri-kpi-label { font-size: 12px; color: var(--ink-soft); font-weight: 500; }
+  .agri-kpi-value { font-family: 'Inter', system-ui, sans-serif; font-size: 20px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .agri-th {
+    text-align: left; font-size: 11px; text-transform: none; color: var(--ink-soft); font-weight: 600;
+    padding: 8px 10px; border-bottom: 1px solid var(--ink); cursor: pointer; white-space: nowrap; user-select: none;
+  }
+  .agri-td { padding: 8px 10px; font-size: 13px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  .agri-tr:hover { background: rgba(75,107,58,0.06); }
+  .agri-dropzone {
+    border: 2px dashed var(--line); border-radius: 10px; background: var(--paper-raised);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 56px 24px; text-align: center; gap: 12px; transition: border-color .15s ease, background .15s ease;
+  }
+  .agri-dropzone[data-drag="true"] { border-color: var(--green); background: rgba(75,107,58,0.06); }
+  @media (max-width: 640px) {
+    .agri-title { font-size: 19px; }
+    .agri-kpi-value { font-size: 16px; }
+    .agri-detail-grid { grid-template-columns: 1fr !important; }
+  }
+`;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -192,7 +268,11 @@ function normalizeRow(r) {
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
-export default function App() {
+function ClienteDashboard({ slug, isAdmin }) {
+  const storageKey = `${STORAGE_KEY_PREFIX}-${slug}`;
+  const cloudPath = `${CLOUD_CLIENTS_BASE}/${slug}/dataset`;
+  const baseUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
+
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null); // {fileName, updatedAt, rowCount}
   const [bootLoading, setBootLoading] = useState(true);
@@ -214,15 +294,6 @@ export default function App() {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState({ key: "Fecha", dir: "desc" });
 
-  // Cargar fuente tipográfica
-  useEffect(() => {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
-    document.head.appendChild(link);
-    return () => { try { document.head.removeChild(link); } catch (e) {} };
-  }, []);
-
   // Cargar último dataset guardado: primero del caché local (instantáneo),
   // y si hay Firebase configurado, nos suscribimos a la nube (tiempo real).
   useEffect(() => {
@@ -230,7 +301,7 @@ export default function App() {
 
     (async () => {
       try {
-        const res = await window.storage.get(STORAGE_KEY, false);
+        const res = await window.storage.get(storageKey, false);
         if (res && res.value) {
           const payload = JSON.parse(res.value);
           const objRows = rowsFromPayload(payload);
@@ -244,7 +315,7 @@ export default function App() {
       }
 
       if (CLOUD_SYNC_ENABLED && cloudDb) {
-        const dbRef = ref(cloudDb, CLOUD_PATH);
+        const dbRef = ref(cloudDb, cloudPath);
         cloudUnsub = onValue(
           dbRef,
           (snapshot) => {
@@ -275,14 +346,14 @@ export default function App() {
     const payload = { columns, rows: dataRows, fileName, updatedAt: new Date().toISOString() };
 
     try {
-      await window.storage.set(STORAGE_KEY, JSON.stringify(payload), false);
+      await window.storage.set(storageKey, JSON.stringify(payload), false);
     } catch (e) {
       console.error("No se pudo guardar en caché local:", e);
     }
 
     if (CLOUD_SYNC_ENABLED && cloudDb) {
       try {
-        await dbSet(ref(cloudDb, CLOUD_PATH), payload);
+        await dbSet(ref(cloudDb, cloudPath), payload);
         setSyncStatus("cloud");
       } catch (e) {
         console.error("No se pudo sincronizar con la nube:", e);
@@ -354,9 +425,9 @@ export default function App() {
 
   const clearDataset = async () => {
     setRows([]); setMeta(null);
-    try { await window.storage.delete(STORAGE_KEY, false); } catch (e) {}
+    try { await window.storage.delete(storageKey, false); } catch (e) {}
     if (CLOUD_SYNC_ENABLED && cloudDb) {
-      try { await dbSet(ref(cloudDb, CLOUD_PATH), null); } catch (e) {}
+      try { await dbSet(ref(cloudDb, cloudPath), null); } catch (e) {}
     }
   };
 
@@ -686,110 +757,52 @@ export default function App() {
 
   // -------------------------------------------------------------------------
   return (
-    <div className="agri-root">
-      <style>{`
-        .agri-root {
-          --paper: #F6F1E2;
-          --paper-raised: #FCFAF2;
-          --ink: #2B2118;
-          --ink-soft: #6B5E4F;
-          --line: #DCD2B8;
-          --green: #4B6B3A;
-          --gold: #B8842E;
-          --teal: #2F5B66;
-          --rust: #A1462F;
-          background: var(--paper);
-          color: var(--ink);
-          font-family: 'Inter', system-ui, sans-serif;
-          min-height: 100vh;
-          padding: 20px 16px 60px;
-        }
-        .agri-root * { box-sizing: border-box; }
-        .agri-serif { font-family: 'Inter', system-ui, sans-serif; font-weight: 600; letter-spacing: -0.005em; }
-        .agri-shell { max-width: 1180px; margin: 0 auto; }
-        .agri-masthead {
-          display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
-          border-bottom: 2px solid var(--ink); padding-bottom: 14px; margin-bottom: 22px; flex-wrap: wrap;
-        }
-        .agri-title { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; font-family: 'Inter', system-ui, sans-serif; }
-        .agri-sub { color: var(--ink-soft); font-size: 13px; margin-top: 4px; }
-        .agri-card {
-          background: var(--paper-raised); border: 1px solid var(--line); border-radius: 6px;
-        }
-        .agri-btn {
-          display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600;
-          padding: 8px 14px; border-radius: 5px; border: 1px solid var(--ink); background: var(--ink); color: var(--paper);
-          cursor: pointer; transition: opacity .15s ease;
-        }
-        .agri-btn:hover { opacity: .85; }
-        .agri-btn-outline {
-          background: transparent; color: var(--ink); border: 1px solid var(--line);
-        }
-        .agri-btn-outline:hover { border-color: var(--ink); opacity: 1; }
-        .agri-input, .agri-select {
-          background: var(--paper-raised); border: 1px solid var(--line); border-radius: 5px;
-          padding: 8px 10px; font-size: 13px; color: var(--ink); font-family: 'Inter', sans-serif;
-        }
-        .agri-input:focus, .agri-select:focus { outline: 2px solid var(--teal); outline-offset: 1px; border-color: var(--teal); }
-        .agri-chip {
-          font-size: 13px; font-weight: 600; padding: 6px 13px; border-radius: 999px; border: 1px solid var(--line);
-          background: var(--paper-raised); cursor: pointer; color: var(--ink-soft);
-        }
-        .agri-chip[data-active="true"] { background: var(--green); border-color: var(--green); color: #fff; }
-        .agri-kpi-label { font-size: 12px; color: var(--ink-soft); font-weight: 500; }
-        .agri-kpi-value { font-family: 'Inter', system-ui, sans-serif; font-size: 20px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
-        .agri-th {
-          text-align: left; font-size: 11px; text-transform: none; color: var(--ink-soft); font-weight: 600;
-          padding: 8px 10px; border-bottom: 1px solid var(--ink); cursor: pointer; white-space: nowrap; user-select: none;
-        }
-        .agri-td { padding: 8px 10px; font-size: 13px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
-        .agri-tr:hover { background: rgba(75,107,58,0.06); }
-        .agri-dropzone {
-          border: 2px dashed var(--line); border-radius: 10px; background: var(--paper-raised);
-          display: flex; flex-direction: column; align-items: center; justify-content: center;
-          padding: 56px 24px; text-align: center; gap: 12px; transition: border-color .15s ease, background .15s ease;
-        }
-        .agri-dropzone[data-drag="true"] { border-color: var(--green); background: rgba(75,107,58,0.06); }
-        @media (max-width: 640px) {
-          .agri-title { font-size: 19px; }
-          .agri-kpi-value { font-size: 16px; }
-          .agri-detail-grid { grid-template-columns: 1fr !important; }
-        }
-      `}</style>
-
-      <div className="agri-shell">
-        {/* Masthead */}
-        <div className="agri-masthead">
-          <div>
-            <div className="agri-title agri-serif">Campaña C25/26 · Producción</div>
-            <div className="agri-sub">
-              {meta ? (
-                <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
-              ) : "Cargá tu planilla para empezar a consultar los datos"}
-            </div>
-            {CLOUD_SYNC_ENABLED && (
-              <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, marginTop: 6, padding: "3px 9px", borderRadius: 999, background: syncStatus === "cloud" ? "rgba(75,107,58,0.12)" : syncStatus === "error" ? "rgba(161,70,47,0.12)" : "rgba(107,94,79,0.12)", color: syncStatus === "cloud" ? "var(--green)" : syncStatus === "error" ? "var(--rust)" : "var(--ink-soft)" }}>
-                {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado en todos tus dispositivos</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión a la nube · usando datos locales</> : <><Cloud size={12} /> Conectando…</>}
-              </div>
-            )}
+    <div className="agri-shell">
+      {/* Masthead */}
+      <div className="agri-masthead">
+        <div>
+          {isAdmin && (
+            <a href={baseUrl} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--ink-soft)", textDecoration: "none", marginBottom: 6 }}>
+              <ArrowLeft size={12} /> Panel de clientes
+            </a>
+          )}
+          <div className="agri-title agri-serif">Campaña C25/26 · Producción</div>
+          <div className="agri-sub">
+            {meta ? (
+              <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
+            ) : isAdmin ? "Cargá tu planilla para empezar a consultar los datos" : "Todavía no hay datos cargados para este cliente."}
           </div>
-          {meta && (
-            <div style={{ display: "flex", gap: 8 }}>
-              <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
-                onChange={(e) => handleFile(e.target.files?.[0])} />
-              <button className="agri-btn" onClick={() => fileInputRef.current?.click()}>
-                <RefreshCw size={14} /> Actualizar datos
-              </button>
-              <button className="agri-btn agri-btn-outline" onClick={clearDataset}>
-                <Trash2 size={14} />
-              </button>
+          {CLOUD_SYNC_ENABLED && (
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, marginTop: 6, padding: "3px 9px", borderRadius: 999, background: syncStatus === "cloud" ? "rgba(75,107,58,0.12)" : syncStatus === "error" ? "rgba(161,70,47,0.12)" : "rgba(107,94,79,0.12)", color: syncStatus === "cloud" ? "var(--green)" : syncStatus === "error" ? "var(--rust)" : "var(--ink-soft)" }}>
+              {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado en todos tus dispositivos</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión a la nube · usando datos locales</> : <><Cloud size={12} /> Conectando…</>}
             </div>
           )}
         </div>
+        {isAdmin && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+              onChange={(e) => handleFile(e.target.files?.[0])} />
+            {meta && (
+              <>
+                <button className="agri-btn" onClick={() => fileInputRef.current?.click()}>
+                  <RefreshCw size={14} /> Actualizar datos
+                </button>
+                <button className="agri-btn agri-btn-outline" onClick={clearDataset}>
+                  <Trash2 size={14} />
+                </button>
+              </>
+            )}
+            <button className="agri-btn agri-btn-outline" onClick={() => signOut(cloudAuth)} title="Cerrar sesión">
+              <LogOut size={14} />
+            </button>
+          </div>
+        )}
+      </div>
 
-        {bootLoading ? (
-          <div style={{ padding: 60, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
+      {bootLoading ? (
+        <div style={{ padding: 60, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
         ) : !meta || rows.length === 0 ? (
+          isAdmin ? (
           <div
             className="agri-dropzone" data-drag={dragOver}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -814,6 +827,13 @@ export default function App() {
               </div>
             )}
           </div>
+          ) : (
+            <div className="agri-card" style={{ padding: 56, textAlign: "center" }}>
+              <FileSpreadsheet size={36} color="var(--ink-soft)" style={{ marginBottom: 10 }} />
+              <div className="agri-serif" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Todavía no hay datos cargados</div>
+              <div style={{ fontSize: 13, color: "var(--ink-soft)" }}>Contactá a tu administrador para que suba la planilla de esta campaña.</div>
+            </div>
+          )
         ) : (
           <>
             {/* Filtros */}
@@ -1314,7 +1334,246 @@ export default function App() {
             </div>
           </>
         )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Login del administrador
+// ---------------------------------------------------------------------------
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await signInWithEmailAndPassword(cloudAuth, email, password);
+    } catch (err) {
+      setError("Usuario o contraseña incorrectos.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="agri-shell" style={{ maxWidth: 380, paddingTop: 70 }}>
+      <div className="agri-card" style={{ padding: 28 }}>
+        <div className="agri-serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Panel de administrador</div>
+        <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 20 }}>Ingresá con tu cuenta para gestionar los clientes y sus datos.</div>
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <input className="agri-input" type="email" placeholder="Email" value={email} autoComplete="username"
+            onChange={(e) => setEmail(e.target.value)} required />
+          <input className="agri-input" type="password" placeholder="Contraseña" value={password} autoComplete="current-password"
+            onChange={(e) => setPassword(e.target.value)} required />
+          {error && <div style={{ color: "var(--rust)", fontSize: 13 }}>{error}</div>}
+          <button className="agri-btn" type="submit" disabled={loading} style={{ justifyContent: "center", marginTop: 4 }}>
+            {loading ? "Ingresando…" : "Ingresar"}
+          </button>
+        </form>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panel de administrador: alta/baja de clientes y acceso a sus dashboards
+// ---------------------------------------------------------------------------
+const slugify = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
+
+function AdminPanel() {
+  const [clients, setClients] = useState(null); // null = cargando
+  const [nombre, setNombre] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState("");
+  const [migrating, setMigrating] = useState(false);
+  const [legacyHasData, setLegacyHasData] = useState(false);
+  const [copiedSlug, setCopiedSlug] = useState("");
+
+  const baseUrl = `${window.location.origin}${window.location.pathname}`;
+  const linkFor = (slug) => `${baseUrl}?cliente=${slug}`;
+
+  useEffect(() => {
+    const dbRef = ref(cloudDb, "clientes/index");
+    const unsub = onValue(dbRef, (snap) => {
+      const val = snap.val() || {};
+      const list = Object.entries(val).map(([slug, v]) => ({ slug, nombre: (v && v.nombre) || slug, creadoEn: v && v.creadoEn }));
+      list.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+      setClients(list);
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    get(ref(cloudDb, "produccionAgricola/dataset")).then((snap) => setLegacyHasData(snap.exists())).catch(() => {});
+  }, []);
+
+  const addClient = async (e) => {
+    e.preventDefault();
+    setAddError("");
+    const base = slugify(nombre);
+    if (!base) { setAddError("Ingresá un nombre válido."); return; }
+    const existing = new Set((clients || []).map((c) => c.slug));
+    let slug = base, n = 2;
+    while (existing.has(slug)) { slug = `${base}-${n}`; n++; }
+    setAdding(true);
+    try {
+      await dbSet(ref(cloudDb, `clientes/index/${slug}`), { nombre: nombre.trim(), creadoEn: new Date().toISOString() });
+      setNombre("");
+    } catch (err) {
+      setAddError("No se pudo crear el cliente. Revisá tu conexión e intentá de nuevo.");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const deleteClient = async (slug, nombreCliente) => {
+    if (!window.confirm(`¿Eliminar a "${nombreCliente}" y todos sus datos? Esta acción no se puede deshacer.`)) return;
+    try {
+      await dbSet(ref(cloudDb, `clientes/index/${slug}`), null);
+      await dbSet(ref(cloudDb, `clientes/${slug}/dataset`), null);
+    } catch (err) { /* silencioso: el listado se refresca solo si falla parcialmente */ }
+  };
+
+  const migrateLegacy = async () => {
+    if (!window.confirm('Esto copia los datos de la versión anterior a un cliente nuevo llamado "Cliente1". ¿Continuar?')) return;
+    setMigrating(true);
+    try {
+      const snap = await get(ref(cloudDb, "produccionAgricola/dataset"));
+      if (snap.exists()) {
+        await dbSet(ref(cloudDb, "clientes/cliente1/dataset"), snap.val());
+        await dbSet(ref(cloudDb, "clientes/index/cliente1"), { nombre: "Cliente1", creadoEn: new Date().toISOString() });
+        setLegacyHasData(false);
+      }
+    } catch (err) {
+      window.alert("No se pudo migrar. Intentá de nuevo.");
+    } finally {
+      setMigrating(false);
+    }
+  };
+
+  const copyLink = (slug) => {
+    const link = linkFor(slug);
+    if (navigator.clipboard) navigator.clipboard.writeText(link).catch(() => {});
+    setCopiedSlug(slug);
+    setTimeout(() => setCopiedSlug(""), 1500);
+  };
+
+  return (
+    <div className="agri-shell">
+      <div className="agri-masthead">
+        <div>
+          <div className="agri-title agri-serif">Panel de administrador</div>
+          <div className="agri-sub">Gestioná tus clientes y el acceso a sus datos.</div>
+        </div>
+        <button className="agri-btn agri-btn-outline" onClick={() => signOut(cloudAuth)}>
+          <LogOut size={14} /> Cerrar sesión
+        </button>
+      </div>
+
+      {legacyHasData && (
+        <div className="agri-card" style={{ padding: 14, marginBottom: 16, borderColor: "var(--gold)" }}>
+          <div style={{ fontSize: 13, marginBottom: 8 }}>
+            Encontré datos de la versión anterior (de un solo cliente). Podés migrarlos a un cliente nuevo llamado "Cliente1" sin perder nada.
+          </div>
+          <button className="agri-btn" disabled={migrating} onClick={migrateLegacy}>
+            {migrating ? "Migrando…" : "Migrar a Cliente1"}
+          </button>
+        </div>
+      )}
+
+      <div className="agri-card" style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Agregar cliente</div>
+        <form onSubmit={addClient} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input className="agri-input" style={{ flex: "1 1 220px" }} placeholder="Nombre del cliente (ej. Cliente1)"
+            value={nombre} onChange={(e) => setNombre(e.target.value)} />
+          <button className="agri-btn" disabled={adding} type="submit"><Plus size={14} /> Agregar</button>
+        </form>
+        {addError && <div style={{ color: "var(--rust)", fontSize: 13, marginTop: 6 }}>{addError}</div>}
+      </div>
+
+      <div className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+          <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Clientes ({clients ? clients.length : 0})</div>
+        </div>
+        {clients === null ? (
+          <div style={{ padding: 30, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
+        ) : clients.length === 0 ? (
+          <div style={{ padding: 30, textAlign: "center", color: "var(--ink-soft)" }}>Todavía no agregaste ningún cliente.</div>
+        ) : (
+          clients.map((c) => (
+            <div key={c.slug} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{c.nombre}</div>
+                <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{linkFor(c.slug)}</div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="agri-btn agri-btn-outline" onClick={() => copyLink(c.slug)}>
+                  {copiedSlug === c.slug ? "¡Copiado!" : "Copiar link"}
+                </button>
+                <a className="agri-btn agri-btn-outline" href={linkFor(c.slug)} target="_blank" rel="noreferrer">Abrir</a>
+                <button className="agri-btn agri-btn-outline" style={{ color: "var(--rust)" }} onClick={() => deleteClient(c.slug, c.nombre)}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Componente raíz: decide qué mostrar según la URL (?cliente=slug) y la sesión
+// ---------------------------------------------------------------------------
+export default function App() {
+  const [authUser, setAuthUser] = useState(undefined); // undefined = resolviendo, null = sin sesión
+  const clienteSlug = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("cliente");
+  }, []);
+
+  // Fuente tipográfica (una sola vez, para toda la app)
+  useEffect(() => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap";
+    document.head.appendChild(link);
+    return () => { try { document.head.removeChild(link); } catch (e) {} };
+  }, []);
+
+  // Sesión de administrador (persiste sola entre recargas gracias a Firebase Auth)
+  useEffect(() => {
+    if (!CLOUD_SYNC_ENABLED || !cloudAuth) { setAuthUser(null); return; }
+    const unsub = onAuthStateChanged(cloudAuth, (u) => setAuthUser(u));
+    return unsub;
+  }, []);
+
+  let content;
+  if (!CLOUD_SYNC_ENABLED) {
+    content = (
+      <div className="agri-shell" style={{ paddingTop: 60, textAlign: "center", color: "var(--ink-soft)" }}>
+        El modo multi-cliente necesita Firebase configurado en <code>firebaseConfig.js</code>.
+      </div>
+    );
+  } else if (authUser === undefined) {
+    content = <div style={{ padding: 60, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>;
+  } else if (!clienteSlug) {
+    content = authUser ? <AdminPanel /> : <LoginScreen />;
+  } else {
+    content = <ClienteDashboard slug={clienteSlug} isAdmin={!!authUser} />;
+  }
+
+  return (
+    <div className="agri-root">
+      <style>{AGRI_STYLES}</style>
+      {content}
     </div>
   );
 }
