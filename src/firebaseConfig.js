@@ -14,4 +14,4 @@ export const CLOUD_SYNC_ENABLED = !firebaseConfig.apiKey.startsWith("TU_");
 
 // Ruta dentro de la base de datos donde se guarda el dataset. No hace falta
 // tocarla, pero tiene que coincidir con las reglas de seguridad de Firebase.
-CLOUD_CLIENTS_BASE = "clientes";
+export const CLOUD_CLIENTS_BASE = "clientes";
