@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, onValue, get, set as dbSet } from "firebase/database";
+import { getDatabase, ref, onValue, set as dbSet } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "firebase/auth";
 import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./firebaseConfig.js";
 import {
@@ -280,6 +280,7 @@ function ClienteDashboard({ slug, isAdmin }) {
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [syncStatus, setSyncStatus] = useState(CLOUD_SYNC_ENABLED ? "connecting" : "local");
+  const [clienteNombre, setClienteNombre] = useState("");
   const fileInputRef = useRef(null);
 
   // Filtros
@@ -293,6 +294,16 @@ function ClienteDashboard({ slug, isAdmin }) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState({ key: "Fecha", dir: "desc" });
+  const [showDetalle, setShowDetalle] = useState(false);
+
+  // Nombre público del cliente (para el título), separado del dataset en sí
+  useEffect(() => {
+    if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
+    const unsub = onValue(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/${slug}/nombre`), (snap) => {
+      setClienteNombre(snap.val() || "");
+    });
+    return unsub;
+  }, [slug]);
 
   // Cargar último dataset guardado: primero del caché local (instantáneo),
   // y si hay Firebase configurado, nos suscribimos a la nube (tiempo real).
@@ -663,21 +674,33 @@ function ClienteDashboard({ slug, isAdmin }) {
         return ca.localeCompare(cb, "es");
       });
   }, [filtered, selectedLoteKey]);
+  const TIPODET_ORDER = { "INSUMOS": 0, "SERVICIOS": 1 };
   const selectedLoteByItem = useMemo(() => {
     const m = new Map();
-    selectedLoteRows.forEach((r) => { if (!r["Tipo item"]) return; m.set(r["Tipo item"], (m.get(r["Tipo item"]) || 0) + (r["U$S/Total"] || 0)); });
-    return Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    selectedLoteRows.forEach((r) => {
+      if (!r["Tipo item"]) return;
+      const key = r["Tipo item"];
+      if (!m.has(key)) m.set(key, { value: 0, tipoDet: r["Tipo Det."] || "" });
+      m.get(key).value += r["U$S/Total"] || 0;
+    });
+    return Array.from(m.entries())
+      .map(([name, v]) => ({ name, value: v.value, tipoDet: v.tipoDet }))
+      .sort((a, b) => (TIPODET_ORDER[a.tipoDet] ?? 2) - (TIPODET_ORDER[b.tipoDet] ?? 2) || b.value - a.value);
   }, [selectedLoteRows]);
 
-  // Resumen agrupado por Rubro > Concepto para la solapa "Resumen por rubro"
+  // Resumen agrupado por Tipo Det. (Insumos primero, Servicios después) > Rubro > Concepto
   const [loteDetailTab, setLoteDetailTab] = useState("resumen");
   useEffect(() => { setLoteDetailTab("resumen"); }, [selectedLoteKey]);
   const selectedLoteSummary = useMemo(() => {
-    const rubroMap = new Map();
+    const detMap = new Map();
     selectedLoteRows.forEach((r) => {
+      const tipoDet = r["Tipo Det."] || "(sin tipo)";
+      if (!detMap.has(tipoDet)) detMap.set(tipoDet, { items: 0, cant: 0, costo: 0, rubros: new Map() });
+      const dg = detMap.get(tipoDet);
+      dg.items += 1; dg.cant += r["Cantidad"] || 0; dg.costo += r["U$S/Total"] || 0;
       const rubro = r["Tipo item"] || "(sin rubro)";
-      if (!rubroMap.has(rubro)) rubroMap.set(rubro, { items: 0, cant: 0, costo: 0, conceptos: new Map() });
-      const rg = rubroMap.get(rubro);
+      if (!dg.rubros.has(rubro)) dg.rubros.set(rubro, { items: 0, cant: 0, costo: 0, conceptos: new Map() });
+      const rg = dg.rubros.get(rubro);
       rg.items += 1; rg.cant += r["Cantidad"] || 0; rg.costo += r["U$S/Total"] || 0;
       const concepto = r["Concepto"] || "(sin concepto)";
       if (!rg.conceptos.has(concepto)) rg.conceptos.set(concepto, { items: 0, cant: 0, costo: 0, unid: r["Unid."], sumUnit: 0, countUnit: 0 });
@@ -686,15 +709,20 @@ function ClienteDashboard({ slug, isAdmin }) {
       if (r["U$S/U"] !== null) { cg.sumUnit += r["U$S/U"]; cg.countUnit += 1; }
     });
     const ha = selectedLoteInfo ? selectedLoteInfo.ha : 0;
-    return Array.from(rubroMap.entries()).map(([rubro, rg]) => ({
-      rubro, items: rg.items, cant: rg.cant, costo: rg.costo, costoHa: ha > 0 ? rg.costo / ha : null,
-      conceptos: Array.from(rg.conceptos.entries()).map(([concepto, cg]) => ({
-        concepto, unid: cg.unid, items: cg.items, cant: cg.cant, costo: cg.costo,
-        unitPrice: cg.countUnit > 0 ? cg.sumUnit / cg.countUnit : null,
-        dosisHa: ha > 0 ? cg.cant / ha : null,
-        costoHa: ha > 0 ? cg.costo / ha : null,
-      })).sort((a, b) => b.costo - a.costo),
-    })).sort((a, b) => b.costo - a.costo);
+    return Array.from(detMap.entries())
+      .map(([tipoDet, dg]) => ({
+        tipoDet, items: dg.items, cant: dg.cant, costo: dg.costo, costoHa: ha > 0 ? dg.costo / ha : null,
+        rubros: Array.from(dg.rubros.entries()).map(([rubro, rg]) => ({
+          rubro, items: rg.items, cant: rg.cant, costo: rg.costo, costoHa: ha > 0 ? rg.costo / ha : null,
+          conceptos: Array.from(rg.conceptos.entries()).map(([concepto, cg]) => ({
+            concepto, unid: cg.unid, items: cg.items, cant: cg.cant, costo: cg.costo,
+            unitPrice: cg.countUnit > 0 ? cg.sumUnit / cg.countUnit : null,
+            dosisHa: ha > 0 ? cg.cant / ha : null,
+            costoHa: ha > 0 ? cg.costo / ha : null,
+          })).sort((a, b) => b.costo - a.costo),
+        })).sort((a, b) => b.costo - a.costo),
+      }))
+      .sort((a, b) => (TIPODET_ORDER[a.tipoDet] ?? 2) - (TIPODET_ORDER[b.tipoDet] ?? 2));
   }, [selectedLoteRows, selectedLoteInfo]);
   // Si cambian los filtros generales y el lote seleccionado deja de existir, lo deseleccionamos
   useEffect(() => {
@@ -766,7 +794,7 @@ function ClienteDashboard({ slug, isAdmin }) {
               <ArrowLeft size={12} /> Panel de clientes
             </a>
           )}
-          <div className="agri-title agri-serif">Campaña C25/26 · Producción</div>
+          <div className="agri-title agri-serif">Costos Agrícolas - {clienteNombre || slug}</div>
           <div className="agri-sub">
             {meta ? (
               <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
@@ -1065,14 +1093,20 @@ function ClienteDashboard({ slug, isAdmin }) {
                 <div className="agri-detail-grid" style={{ display: "grid", gridTemplateColumns: "minmax(190px, 0.8fr) minmax(320px, 1.8fr)", gap: 16 }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Composición del costo por rubro</div>
-                    <ResponsiveContainer width="100%" height={Math.max(160, selectedLoteByItem.length * 26)}>
+                    <ResponsiveContainer width="100%" height={Math.max(180, selectedLoteByItem.length * 26 + 30)}>
                       <BarChart data={selectedLoteByItem} layout="vertical" margin={{ left: 10 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
                         <XAxis type="number" tick={{ fontSize: 10, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
                         <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 10, fill: "#2B2118" }} axisLine={false} tickLine={false} />
                         <Tooltip formatter={(v) => fmtUSD2(v)} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                        <Legend
+                          wrapperStyle={{ fontSize: 11 }}
+                          payload={[{ value: "Insumos", type: "square", color: "#4B6B3A" }, { value: "Servicios", type: "square", color: "#B8842E" }]}
+                        />
                         <Bar dataKey="value" radius={[0, 3, 3, 0]}>
-                          {selectedLoteByItem.map((_, i) => <Cell key={i} fill={FALLBACK_COLORS[i % FALLBACK_COLORS.length]} />)}
+                          {selectedLoteByItem.map((e, i) => (
+                            <Cell key={i} fill={e.tipoDet === "INSUMOS" ? "#4B6B3A" : e.tipoDet === "SERVICIOS" ? "#B8842E" : FALLBACK_COLORS[i % FALLBACK_COLORS.length]} />
+                          ))}
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -1141,27 +1175,40 @@ function ClienteDashboard({ slug, isAdmin }) {
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedLoteSummary.map((rg, ri) => (
-                            <React.Fragment key={ri}>
-                              <tr className="agri-tr" style={{ background: "rgba(75,107,58,0.07)" }}>
-                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, fontWeight: 700 }}>{rg.rubro}</td>
-                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>
-                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>
-                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.items}</td>
-                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtNum(rg.cant, 1)}</td>
-                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtUSD2(rg.costo)}</td>
-                                <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.costoHa === null ? "—" : fmtUSD2(rg.costoHa)}</td>
+                          {selectedLoteSummary.map((dg, di) => (
+                            <React.Fragment key={di}>
+                              <tr className="agri-tr" style={{ background: "rgba(75,107,58,0.16)" }}>
+                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em" }}>{dg.tipoDet}</td>
+                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11 }}></td>
+                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11 }}></td>
+                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{dg.items}</td>
+                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtNum(dg.cant, 1)}</td>
+                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtUSD2(dg.costo)}</td>
+                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{dg.costoHa === null ? "—" : fmtUSD2(dg.costoHa)}</td>
                               </tr>
-                              {rg.conceptos.map((cg, ci) => (
-                                <tr key={ci} className="agri-tr">
-                                  <td className="agri-td" style={{ padding: "4px 7px 4px 18px", fontSize: 10, color: "var(--ink-soft)" }}>{cg.concepto}</td>
-                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.unitPrice === null ? "—" : fmtUSD2(cg.unitPrice)}</td>
-                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.dosisHa === null ? "—" : `${fmtNum(cg.dosisHa, 2)} ${cg.unid}/ha`}</td>
-                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.items}</td>
-                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtNum(cg.cant, 1)} {cg.unid}</td>
-                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtUSD2(cg.costo)}</td>
-                                  <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.costoHa === null ? "—" : fmtUSD2(cg.costoHa)}</td>
-                                </tr>
+                              {dg.rubros.map((rg, ri) => (
+                                <React.Fragment key={ri}>
+                                  <tr className="agri-tr" style={{ background: "rgba(75,107,58,0.07)" }}>
+                                    <td className="agri-td" style={{ padding: "4px 7px 4px 14px", fontSize: 11, fontWeight: 700 }}>{rg.rubro}</td>
+                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>
+                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>
+                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.items}</td>
+                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtNum(rg.cant, 1)}</td>
+                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtUSD2(rg.costo)}</td>
+                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.costoHa === null ? "—" : fmtUSD2(rg.costoHa)}</td>
+                                  </tr>
+                                  {rg.conceptos.map((cg, ci) => (
+                                    <tr key={ci} className="agri-tr">
+                                      <td className="agri-td" style={{ padding: "4px 7px 4px 26px", fontSize: 10, color: "var(--ink-soft)" }}>{cg.concepto}</td>
+                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.unitPrice === null ? "—" : fmtUSD2(cg.unitPrice)}</td>
+                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.dosisHa === null ? "—" : `${fmtNum(cg.dosisHa, 2)} ${cg.unid}/ha`}</td>
+                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.items}</td>
+                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtNum(cg.cant, 1)} {cg.unid}</td>
+                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtUSD2(cg.costo)}</td>
+                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.costoHa === null ? "—" : fmtUSD2(cg.costoHa)}</td>
+                                    </tr>
+                                  ))}
+                                </React.Fragment>
                               ))}
                             </React.Fragment>
                           ))}
@@ -1214,13 +1261,18 @@ function ClienteDashboard({ slug, isAdmin }) {
 
             {/* Tabla */}
             <div className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ padding: "12px 16px", borderBottom: showDetalle ? "1px solid var(--line)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Detalle de movimientos</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(sorted.length)} registros filtrados</span>
                   <button className="agri-btn agri-btn-outline" onClick={exportToExcel}><Download size={13} /> Exportar a Excel</button>
+                  <button className="agri-btn agri-btn-outline" onClick={() => setShowDetalle((v) => !v)} title={showDetalle ? "Colapsar" : "Expandir"}>
+                    {showDetalle ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </button>
                 </div>
               </div>
+              {showDetalle && (
+              <>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
                   <thead>
@@ -1262,6 +1314,8 @@ function ClienteDashboard({ slug, isAdmin }) {
                   <button className="agri-btn agri-btn-outline" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} style={{ opacity: page >= totalPages ? 0.4 : 1 }}><ChevronRight size={14} /></button>
                 </div>
               </div>
+              </>
+              )}
             </div>
 
             {/* Control de datos: colapsado por defecto, no invasivo */}
@@ -1391,9 +1445,11 @@ function AdminPanel() {
   const [nombre, setNombre] = useState("");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState("");
-  const [migrating, setMigrating] = useState(false);
-  const [legacyHasData, setLegacyHasData] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState("");
+  const [editingSlug, setEditingSlug] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const [editError, setEditError] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const baseUrl = `${window.location.origin}${window.location.pathname}`;
   const linkFor = (slug) => `${baseUrl}?cliente=${slug}`;
@@ -1409,21 +1465,25 @@ function AdminPanel() {
     return unsub;
   }, []);
 
-  useEffect(() => {
-    get(ref(cloudDb, "produccionAgricola/dataset")).then((snap) => setLegacyHasData(snap.exists())).catch(() => {});
-  }, []);
+  const nombreDuplicado = (nombreNuevo, slugAEexcluir) => {
+    const norm = nombreNuevo.trim().toLowerCase();
+    return (clients || []).some((c) => c.slug !== slugAEexcluir && c.nombre.trim().toLowerCase() === norm);
+  };
 
   const addClient = async (e) => {
     e.preventDefault();
     setAddError("");
-    const base = slugify(nombre);
+    const trimmed = nombre.trim();
+    const base = slugify(trimmed);
     if (!base) { setAddError("Ingresá un nombre válido."); return; }
-    const existing = new Set((clients || []).map((c) => c.slug));
+    if (nombreDuplicado(trimmed, null)) { setAddError("Ya existe un cliente con ese nombre."); return; }
+    const existingSlugs = new Set((clients || []).map((c) => c.slug));
     let slug = base, n = 2;
-    while (existing.has(slug)) { slug = `${base}-${n}`; n++; }
+    while (existingSlugs.has(slug)) { slug = `${base}-${n}`; n++; }
     setAdding(true);
     try {
-      await dbSet(ref(cloudDb, `clientes/index/${slug}`), { nombre: nombre.trim(), creadoEn: new Date().toISOString() });
+      await dbSet(ref(cloudDb, `clientes/index/${slug}`), { nombre: trimmed, creadoEn: new Date().toISOString() });
+      await dbSet(ref(cloudDb, `clientes/${slug}/nombre`), trimmed);
       setNombre("");
     } catch (err) {
       setAddError("No se pudo crear el cliente. Revisá tu conexión e intentá de nuevo.");
@@ -1432,29 +1492,32 @@ function AdminPanel() {
     }
   };
 
+  const startEdit = (c) => { setEditingSlug(c.slug); setEditValue(c.nombre); setEditError(""); };
+  const cancelEdit = () => { setEditingSlug(null); setEditValue(""); setEditError(""); };
+
+  const saveEdit = async (slug) => {
+    const trimmed = editValue.trim();
+    if (!trimmed) { setEditError("El nombre no puede quedar vacío."); return; }
+    if (nombreDuplicado(trimmed, slug)) { setEditError("Ya existe un cliente con ese nombre."); return; }
+    setSavingEdit(true);
+    try {
+      await dbSet(ref(cloudDb, `clientes/index/${slug}/nombre`), trimmed);
+      await dbSet(ref(cloudDb, `clientes/${slug}/nombre`), trimmed);
+      setEditingSlug(null);
+      setEditValue("");
+    } catch (err) {
+      setEditError("No se pudo guardar. Intentá de nuevo.");
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   const deleteClient = async (slug, nombreCliente) => {
     if (!window.confirm(`¿Eliminar a "${nombreCliente}" y todos sus datos? Esta acción no se puede deshacer.`)) return;
     try {
       await dbSet(ref(cloudDb, `clientes/index/${slug}`), null);
-      await dbSet(ref(cloudDb, `clientes/${slug}/dataset`), null);
+      await dbSet(ref(cloudDb, `clientes/${slug}`), null);
     } catch (err) { /* silencioso: el listado se refresca solo si falla parcialmente */ }
-  };
-
-  const migrateLegacy = async () => {
-    if (!window.confirm('Esto copia los datos de la versión anterior a un cliente nuevo llamado "Cliente1". ¿Continuar?')) return;
-    setMigrating(true);
-    try {
-      const snap = await get(ref(cloudDb, "produccionAgricola/dataset"));
-      if (snap.exists()) {
-        await dbSet(ref(cloudDb, "clientes/cliente1/dataset"), snap.val());
-        await dbSet(ref(cloudDb, "clientes/index/cliente1"), { nombre: "Cliente1", creadoEn: new Date().toISOString() });
-        setLegacyHasData(false);
-      }
-    } catch (err) {
-      window.alert("No se pudo migrar. Intentá de nuevo.");
-    } finally {
-      setMigrating(false);
-    }
   };
 
   const copyLink = (slug) => {
@@ -1475,17 +1538,6 @@ function AdminPanel() {
           <LogOut size={14} /> Cerrar sesión
         </button>
       </div>
-
-      {legacyHasData && (
-        <div className="agri-card" style={{ padding: 14, marginBottom: 16, borderColor: "var(--gold)" }}>
-          <div style={{ fontSize: 13, marginBottom: 8 }}>
-            Encontré datos de la versión anterior (de un solo cliente). Podés migrarlos a un cliente nuevo llamado "Cliente1" sin perder nada.
-          </div>
-          <button className="agri-btn" disabled={migrating} onClick={migrateLegacy}>
-            {migrating ? "Migrando…" : "Migrar a Cliente1"}
-          </button>
-        </div>
-      )}
 
       <div className="agri-card" style={{ padding: 16, marginBottom: 16 }}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Agregar cliente</div>
@@ -1508,19 +1560,35 @@ function AdminPanel() {
         ) : (
           clients.map((c) => (
             <div key={c.slug} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{c.nombre}</div>
-                <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{linkFor(c.slug)}</div>
-              </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button className="agri-btn agri-btn-outline" onClick={() => copyLink(c.slug)}>
-                  {copiedSlug === c.slug ? "¡Copiado!" : "Copiar link"}
-                </button>
-                <a className="agri-btn agri-btn-outline" href={linkFor(c.slug)} target="_blank" rel="noreferrer">Abrir</a>
-                <button className="agri-btn agri-btn-outline" style={{ color: "var(--rust)" }} onClick={() => deleteClient(c.slug, c.nombre)}>
-                  <Trash2 size={13} />
-                </button>
-              </div>
+              {editingSlug === c.slug ? (
+                <div style={{ flex: "1 1 220px" }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <input className="agri-input" style={{ flex: "1 1 180px" }} value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)} autoFocus
+                      onKeyDown={(e) => { if (e.key === "Enter") saveEdit(c.slug); if (e.key === "Escape") cancelEdit(); }} />
+                    <button className="agri-btn" disabled={savingEdit} onClick={() => saveEdit(c.slug)}>{savingEdit ? "Guardando…" : "Guardar"}</button>
+                    <button className="agri-btn agri-btn-outline" onClick={cancelEdit}>Cancelar</button>
+                  </div>
+                  {editError && <div style={{ color: "var(--rust)", fontSize: 12, marginTop: 4 }}>{editError}</div>}
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{c.nombre}</div>
+                  <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{linkFor(c.slug)}</div>
+                </div>
+              )}
+              {editingSlug !== c.slug && (
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="agri-btn agri-btn-outline" onClick={() => copyLink(c.slug)}>
+                    {copiedSlug === c.slug ? "¡Copiado!" : "Copiar link"}
+                  </button>
+                  <a className="agri-btn agri-btn-outline" href={linkFor(c.slug)} target="_blank" rel="noreferrer">Abrir</a>
+                  <button className="agri-btn agri-btn-outline" onClick={() => startEdit(c)}>Editar</button>
+                  <button className="agri-btn agri-btn-outline" style={{ color: "var(--rust)" }} onClick={() => deleteClient(c.slug, c.nombre)}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              )}
             </div>
           ))
         )}
