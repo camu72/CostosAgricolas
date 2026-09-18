@@ -1539,7 +1539,7 @@ function AdminPanel() {
           }
           return cur;
         });
-      }, 5500);
+      }, 2500);
     }
   };
 
