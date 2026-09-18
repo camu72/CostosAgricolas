@@ -300,7 +300,7 @@ function ClienteDashboard({ slug, isAdmin }) {
   // Nombre público del cliente (para el título), separado del dataset en sí
   useEffect(() => {
     if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
-    const unsub = onValue(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/${slug}/nombre`), (snap) => {
+    const unsub = onValue(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/index/${slug}/nombre`), (snap) => {
       setClienteNombre(snap.val() || "");
     });
     return unsub;
@@ -446,12 +446,24 @@ function ClienteDashboard({ slug, isAdmin }) {
 
   // Listas para filtros
   const cultivos = useMemo(() => Array.from(new Set(rows.map((r) => r["Cultivo"]).filter(Boolean))).sort(), [rows]);
-  const campos = useMemo(() => Array.from(new Set(rows.map((r) => r["Campo"]).filter(Boolean))).sort(), [rows]);
   const administraciones = useMemo(() => Array.from(new Set(rows.map((r) => r["Admin"]).filter(Boolean))).sort(), [rows]);
+  // Los campos dependen de la administración elegida, para no listar campos que no le pertenecen
+  const campos = useMemo(() => {
+    const base = administracion === "Todos" ? rows : rows.filter((r) => r["Admin"] === administracion);
+    return Array.from(new Set(base.map((r) => r["Campo"]).filter(Boolean))).sort();
+  }, [rows, administracion]);
+  // Si el campo elegido deja de pertenecer a la administración elegida, lo reseteamos
+  useEffect(() => {
+    if (campo !== "Todos" && !campos.includes(campo)) setCampo("Todos");
+  }, [campos]); // eslint-disable-line react-hooks/exhaustive-deps
   const tipoItems = useMemo(() => Array.from(new Set(rows.map((r) => r["Tipo item"]).filter(Boolean))).sort(), [rows]);
-  // Los lotes dependen del campo y cultivo elegidos, para no listar lotes que no aplican
+  // Los lotes dependen de la administración, el campo y el cultivo elegidos
   const loteOptions = useMemo(() => {
-    const base = rows.filter((r) => (campo === "Todos" || r["Campo"] === campo) && (cultivo === "Todos" || r["Cultivo"] === cultivo));
+    const base = rows.filter((r) =>
+      (administracion === "Todos" || r["Admin"] === administracion) &&
+      (campo === "Todos" || r["Campo"] === campo) &&
+      (cultivo === "Todos" || r["Cultivo"] === cultivo)
+    );
     const map = new Map();
     base.forEach((r) => {
       if (!r["Lote"]) return;
@@ -459,8 +471,8 @@ function ClienteDashboard({ slug, isAdmin }) {
       if (!map.has(value)) map.set(value, campo === "Todos" ? `${r["Campo"]} · Lote ${r["Lote"]}` : `Lote ${r["Lote"]}`);
     });
     return Array.from(map.entries()).map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, "es", { numeric: true }));
-  }, [rows, campo, cultivo]);
-  // Si el lote elegido deja de tener sentido con el nuevo campo/cultivo, lo reseteamos
+  }, [rows, administracion, campo, cultivo]);
+  // Si el lote elegido deja de tener sentido con el nuevo campo/cultivo/administración, lo reseteamos
   useEffect(() => {
     if (lote !== "Todos" && !loteOptions.some((o) => o.value === lote)) setLote("Todos");
   }, [loteOptions]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -882,6 +894,10 @@ function ClienteDashboard({ slug, isAdmin }) {
                   <input className="agri-input" style={{ width: "100%", paddingLeft: 30 }}
                     placeholder="Buscar concepto, lote, labor…" value={search} onChange={(e) => setSearch(e.target.value)} />
                 </div>
+                <select className="agri-select" value={administracion} onChange={(e) => setAdministracion(e.target.value)}>
+                  <option value="Todos">Todas las administraciones</option>
+                  {administraciones.map((a) => <option key={a} value={a}>{a}</option>)}
+                </select>
                 <select className="agri-select" value={campo} onChange={(e) => setCampo(e.target.value)}>
                   <option value="Todos">Todos los campos</option>
                   {campos.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -889,10 +905,6 @@ function ClienteDashboard({ slug, isAdmin }) {
                 <select className="agri-select" value={lote} onChange={(e) => setLote(e.target.value)}>
                   <option value="Todos">Todos los lotes</option>
                   {loteOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-                <select className="agri-select" value={administracion} onChange={(e) => setAdministracion(e.target.value)}>
-                  <option value="Todos">Todas las administraciones</option>
-                  {administraciones.map((a) => <option key={a} value={a}>{a}</option>)}
                 </select>
                 <select className="agri-select" value={tipoDet} onChange={(e) => setTipoDet(e.target.value)}>
                   <option value="Todos">Insumos y servicios</option>
@@ -1469,12 +1481,6 @@ function AdminPanel() {
       const list = Object.entries(val).map(([slug, v]) => ({ slug, nombre: (v && v.nombre) || slug, creadoEn: v && v.creadoEn }));
       list.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
       setClients(list);
-      // Auto-corrección: clientes creados antes de que existiera el "espejo"
-      // público del nombre (clientes/{slug}/nombre) no lo tenían, y el
-      // dashboard mostraba el slug en vez del nombre. Lo sincronizamos solo.
-      list.forEach((c) => {
-        dbSet(ref(cloudDb, `clientes/${c.slug}/nombre`), c.nombre).catch(() => {});
-      });
     });
     return unsub;
   }, []);
@@ -1497,7 +1503,6 @@ function AdminPanel() {
     setAdding(true);
     try {
       await dbSet(ref(cloudDb, `clientes/index/${slug}`), { nombre: trimmed, creadoEn: new Date().toISOString() });
-      await dbSet(ref(cloudDb, `clientes/${slug}/nombre`), trimmed);
       setNombre("");
     } catch (err) {
       setAddError("No se pudo crear el cliente. Revisá tu conexión e intentá de nuevo.");
@@ -1516,7 +1521,6 @@ function AdminPanel() {
     setSavingEdit(true);
     try {
       await dbSet(ref(cloudDb, `clientes/index/${slug}/nombre`), trimmed);
-      await dbSet(ref(cloudDb, `clientes/${slug}/nombre`), trimmed);
       setEditingSlug(null);
       setEditValue("");
     } catch (err) {
