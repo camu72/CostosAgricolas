@@ -287,6 +287,7 @@ function ClienteDashboard({ slug, isAdmin }) {
   const [cultivo, setCultivo] = useState("Todos");
   const [campo, setCampo] = useState("Todos");
   const [lote, setLote] = useState("Todos");
+  const [administracion, setAdministracion] = useState("Todos");
   const [tipoDet, setTipoDet] = useState("Todos");
   const [tipoItem, setTipoItem] = useState("Todos");
   const [desde, setDesde] = useState("");
@@ -403,6 +404,7 @@ function ClienteDashboard({ slug, isAdmin }) {
       const wouldMatch = normalized.some((r) => {
         if (cultivo !== "Todos" && r["Cultivo"] !== cultivo) return false;
         if (campo !== "Todos" && r["Campo"] !== campo) return false;
+        if (administracion !== "Todos" && r["Admin"] !== administracion) return false;
         if (lote !== "Todos") {
           const [lc, ll] = lote.split("::");
           if (r["Campo"] !== lc || r["Lote"] !== ll) return false;
@@ -418,7 +420,7 @@ function ClienteDashboard({ slug, isAdmin }) {
         return true;
       });
       if (!wouldMatch) {
-        setCultivo("Todos"); setCampo("Todos"); setLote("Todos"); setTipoDet("Todos");
+        setCultivo("Todos"); setCampo("Todos"); setLote("Todos"); setAdministracion("Todos"); setTipoDet("Todos");
         setTipoItem("Todos"); setDesde(""); setHasta(""); setSearch("");
       }
     } catch (e) {
@@ -445,6 +447,7 @@ function ClienteDashboard({ slug, isAdmin }) {
   // Listas para filtros
   const cultivos = useMemo(() => Array.from(new Set(rows.map((r) => r["Cultivo"]).filter(Boolean))).sort(), [rows]);
   const campos = useMemo(() => Array.from(new Set(rows.map((r) => r["Campo"]).filter(Boolean))).sort(), [rows]);
+  const administraciones = useMemo(() => Array.from(new Set(rows.map((r) => r["Admin"]).filter(Boolean))).sort(), [rows]);
   const tipoItems = useMemo(() => Array.from(new Set(rows.map((r) => r["Tipo item"]).filter(Boolean))).sort(), [rows]);
   // Los lotes dependen del campo y cultivo elegidos, para no listar lotes que no aplican
   const loteOptions = useMemo(() => {
@@ -468,6 +471,7 @@ function ClienteDashboard({ slug, isAdmin }) {
     return rows.filter((r) => {
       if (cultivo !== "Todos" && r["Cultivo"] !== cultivo) return false;
       if (campo !== "Todos" && r["Campo"] !== campo) return false;
+      if (administracion !== "Todos" && r["Admin"] !== administracion) return false;
       if (lote !== "Todos") {
         const [lc, ll] = lote.split("::");
         if (r["Campo"] !== lc || r["Lote"] !== ll) return false;
@@ -482,9 +486,9 @@ function ClienteDashboard({ slug, isAdmin }) {
       }
       return true;
     });
-  }, [rows, cultivo, campo, lote, tipoDet, tipoItem, desde, hasta, search]);
+  }, [rows, cultivo, campo, administracion, lote, tipoDet, tipoItem, desde, hasta, search]);
 
-  useEffect(() => { setPage(1); }, [cultivo, campo, lote, tipoDet, tipoItem, desde, hasta, search]);
+  useEffect(() => { setPage(1); }, [cultivo, campo, administracion, lote, tipoDet, tipoItem, desde, hasta, search]);
 
   // KPIs
   const kpis = useMemo(() => {
@@ -780,8 +784,8 @@ function ClienteDashboard({ slug, isAdmin }) {
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
   };
 
-  const resetFiltros = () => { setCultivo("Todos"); setCampo("Todos"); setLote("Todos"); setTipoDet("Todos"); setTipoItem("Todos"); setDesde(""); setHasta(""); setSearch(""); };
-  const hayFiltrosActivos = cultivo !== "Todos" || campo !== "Todos" || lote !== "Todos" || tipoDet !== "Todos" || tipoItem !== "Todos" || desde || hasta || search;
+  const resetFiltros = () => { setCultivo("Todos"); setCampo("Todos"); setLote("Todos"); setAdministracion("Todos"); setTipoDet("Todos"); setTipoItem("Todos"); setDesde(""); setHasta(""); setSearch(""); };
+  const hayFiltrosActivos = cultivo !== "Todos" || campo !== "Todos" || lote !== "Todos" || administracion !== "Todos" || tipoDet !== "Todos" || tipoItem !== "Todos" || desde || hasta || search;
 
   // -------------------------------------------------------------------------
   return (
@@ -885,6 +889,10 @@ function ClienteDashboard({ slug, isAdmin }) {
                 <select className="agri-select" value={lote} onChange={(e) => setLote(e.target.value)}>
                   <option value="Todos">Todos los lotes</option>
                   {loteOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                <select className="agri-select" value={administracion} onChange={(e) => setAdministracion(e.target.value)}>
+                  <option value="Todos">Todas las administraciones</option>
+                  {administraciones.map((a) => <option key={a} value={a}>{a}</option>)}
                 </select>
                 <select className="agri-select" value={tipoDet} onChange={(e) => setTipoDet(e.target.value)}>
                   <option value="Todos">Insumos y servicios</option>
@@ -1461,6 +1469,12 @@ function AdminPanel() {
       const list = Object.entries(val).map(([slug, v]) => ({ slug, nombre: (v && v.nombre) || slug, creadoEn: v && v.creadoEn }));
       list.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
       setClients(list);
+      // Auto-corrección: clientes creados antes de que existiera el "espejo"
+      // público del nombre (clientes/{slug}/nombre) no lo tenían, y el
+      // dashboard mostraba el slug en vez del nombre. Lo sincronizamos solo.
+      list.forEach((c) => {
+        dbSet(ref(cloudDb, `clientes/${c.slug}/nombre`), c.nombre).catch(() => {});
+      });
     });
     return unsub;
   }, []);
