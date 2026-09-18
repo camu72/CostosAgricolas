@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, onValue, set as dbSet } from "firebase/database";
+import { getDatabase, ref, onValue, get, set as dbSet } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "firebase/auth";
 import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./firebaseConfig.js";
 import {
@@ -1470,6 +1470,8 @@ function AdminPanel() {
   const [editValue, setEditValue] = useState("");
   const [editError, setEditError] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
+  const [pendingAdd, setPendingAdd] = useState(null); // { slug, nombre } mientras confirmamos que se creó
+  const [pendingEdit, setPendingEdit] = useState(null); // { slug, nombre } mientras confirmamos que se guardó
 
   const baseUrl = `${window.location.origin}${window.location.pathname}`;
   const linkFor = (slug) => `${baseUrl}?cliente=${slug}`;
@@ -1484,6 +1486,24 @@ function AdminPanel() {
     });
     return unsub;
   }, []);
+
+  // Confirmación real de altas/ediciones: Firebase puede tardar en avisar que
+  // el guardado se concretó (a veces el "await" corta antes de tiempo), así que
+  // en vez de confiar solo en la promesa, esperamos a ver el dato reflejado en
+  // la suscripción en vivo antes de dar por buena la operación.
+  useEffect(() => {
+    if (!pendingAdd || !clients) return;
+    if (clients.some((c) => c.slug === pendingAdd.slug && c.nombre === pendingAdd.nombre)) {
+      setNombre(""); setAddError(""); setAdding(false); setPendingAdd(null);
+    }
+  }, [clients, pendingAdd]);
+
+  useEffect(() => {
+    if (!pendingEdit || !clients) return;
+    if (clients.some((c) => c.slug === pendingEdit.slug && c.nombre === pendingEdit.nombre)) {
+      setEditingSlug(null); setEditValue(""); setEditError(""); setSavingEdit(false); setPendingEdit(null);
+    }
+  }, [clients, pendingEdit]);
 
   const nombreDuplicado = (nombreNuevo, slugAEexcluir) => {
     const norm = nombreNuevo.trim().toLowerCase();
@@ -1501,13 +1521,25 @@ function AdminPanel() {
     let slug = base, n = 2;
     while (existingSlugs.has(slug)) { slug = `${base}-${n}`; n++; }
     setAdding(true);
+    setPendingAdd({ slug, nombre: trimmed });
     try {
       await dbSet(ref(cloudDb, `clientes/index/${slug}`), { nombre: trimmed, creadoEn: new Date().toISOString() });
       setNombre("");
-    } catch (err) {
-      setAddError("No se pudo crear el cliente. Revisá tu conexión e intentá de nuevo.");
-    } finally {
       setAdding(false);
+      setPendingAdd(null);
+    } catch (err) {
+      // Firebase a veces tarda en confirmar aunque la escritura sí se concreta;
+      // esperamos un instante a que llegue por la suscripción antes de avisar un error real.
+      setTimeout(() => {
+        setPendingAdd((cur) => {
+          if (cur && cur.slug === slug) {
+            setAddError("No se pudo crear el cliente. Revisá tu conexión e intentá de nuevo.");
+            setAdding(false);
+            return null;
+          }
+          return cur;
+        });
+      }, 2500);
     }
   };
 
@@ -1518,15 +1550,53 @@ function AdminPanel() {
     const trimmed = editValue.trim();
     if (!trimmed) { setEditError("El nombre no puede quedar vacío."); return; }
     if (nombreDuplicado(trimmed, slug)) { setEditError("Ya existe un cliente con ese nombre."); return; }
+    const newBase = slugify(trimmed);
+    if (!newBase) { setEditError("Ingresá un nombre válido."); return; }
+    const otherSlugs = new Set((clients || []).map((c) => c.slug).filter((s) => s !== slug));
+    let newSlug = newBase, n = 2;
+    while (otherSlugs.has(newSlug)) { newSlug = `${newBase}-${n}`; n++; }
+
+    if (newSlug !== slug) {
+      const ok = window.confirm(
+        "Ese nombre genera un link nuevo para este cliente. El link actual va a dejar de funcionar " +
+        "(sus datos se migran al nuevo link). ¿Continuar?"
+      );
+      if (!ok) return;
+    }
+
     setSavingEdit(true);
+    setPendingEdit({ slug: newSlug, nombre: trimmed });
     try {
-      await dbSet(ref(cloudDb, `clientes/index/${slug}/nombre`), trimmed);
+      if (newSlug !== slug) {
+        const oldClient = (clients || []).find((c) => c.slug === slug);
+        const snap = await get(ref(cloudDb, `clientes/${slug}/dataset`));
+        if (snap.exists()) {
+          await dbSet(ref(cloudDb, `clientes/${newSlug}/dataset`), snap.val());
+        }
+        await dbSet(ref(cloudDb, `clientes/index/${newSlug}`), {
+          nombre: trimmed,
+          creadoEn: (oldClient && oldClient.creadoEn) || new Date().toISOString(),
+        });
+        await dbSet(ref(cloudDb, `clientes/index/${slug}`), null);
+        await dbSet(ref(cloudDb, `clientes/${slug}`), null);
+      } else {
+        await dbSet(ref(cloudDb, `clientes/index/${slug}/nombre`), trimmed);
+      }
       setEditingSlug(null);
       setEditValue("");
-    } catch (err) {
-      setEditError("No se pudo guardar. Intentá de nuevo.");
-    } finally {
       setSavingEdit(false);
+      setPendingEdit(null);
+    } catch (err) {
+      setTimeout(() => {
+        setPendingEdit((cur) => {
+          if (cur) {
+            setEditError("No se pudo guardar. Intentá de nuevo.");
+            setSavingEdit(false);
+            return null;
+          }
+          return cur;
+        });
+      }, 2500);
     }
   };
 
