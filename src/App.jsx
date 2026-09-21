@@ -1487,23 +1487,53 @@ function AdminPanel() {
     return unsub;
   }, []);
 
-  // Confirmación real de altas/ediciones: Firebase puede tardar en avisar que
-  // el guardado se concretó (a veces el "await" corta antes de tiempo), así que
-  // en vez de confiar solo en la promesa, esperamos a ver el dato reflejado en
-  // la suscripción en vivo antes de dar por buena la operación.
+  // Confirmación real vía suscripción en vivo (única fuente de verdad).
+  // La promesa de dbSet no es confiable en este entorno — la ignoramos y
+  // miramos directamente si el dato aparece en la lista.
   useEffect(() => {
     if (!pendingAdd || !clients) return;
     if (clients.some((c) => c.slug === pendingAdd.slug && c.nombre === pendingAdd.nombre)) {
+      // Éxito confirmado
       setNombre(""); setAddError(""); setAdding(false); setPendingAdd(null);
+      return;
     }
-  }, [clients, pendingAdd]);
+    // Si ya pasaron 8 segundos y no llegó, recién entonces avisamos error real
+    const t = setTimeout(() => {
+      setPendingAdd((cur) => {
+        if (cur && cur.slug === pendingAdd.slug) {
+          setAddError("No se pudo crear el cliente. Revisá tu conexión e intentá de nuevo.");
+          setAdding(false);
+          return null;
+        }
+        return cur;
+      });
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [clients, pendingAdd?.slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!pendingEdit || !clients) return;
-    if (clients.some((c) => c.slug === pendingEdit.slug && c.nombre === pendingEdit.nombre)) {
+    // Para migración de slug, chequeamos el nuevo; para edición de nombre, chequeamos el nombre
+    const confirmado = clients.some((c) => c.slug === pendingEdit.slug && c.nombre === pendingEdit.nombre);
+    const viejoDesaparecio = pendingEdit.oldSlug !== pendingEdit.slug
+      ? !clients.some((c) => c.slug === pendingEdit.oldSlug)
+      : true;
+    if (confirmado && viejoDesaparecio) {
       setEditingSlug(null); setEditValue(""); setEditError(""); setSavingEdit(false); setPendingEdit(null);
+      return;
     }
-  }, [clients, pendingEdit]);
+    const t = setTimeout(() => {
+      setPendingEdit((cur) => {
+        if (cur) {
+          setEditError("No se pudo guardar. Intentá de nuevo.");
+          setSavingEdit(false);
+          return null;
+        }
+        return cur;
+      });
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [clients, pendingEdit?.slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const nombreDuplicado = (nombreNuevo, slugAEexcluir) => {
     const norm = nombreNuevo.trim().toLowerCase();
@@ -1522,25 +1552,9 @@ function AdminPanel() {
     while (existingSlugs.has(slug)) { slug = `${base}-${n}`; n++; }
     setAdding(true);
     setPendingAdd({ slug, nombre: trimmed });
-    try {
-      await dbSet(ref(cloudDb, `clientes/index/${slug}`), { nombre: trimmed, creadoEn: new Date().toISOString() });
-      setNombre("");
-      setAdding(false);
-      setPendingAdd(null);
-    } catch (err) {
-      // Firebase a veces tarda en confirmar aunque la escritura sí se concreta;
-      // esperamos un instante a que llegue por la suscripción antes de avisar un error real.
-      setTimeout(() => {
-        setPendingAdd((cur) => {
-          if (cur && cur.slug === slug) {
-            setAddError("No se pudo crear el cliente. Revisá tu conexión e intentá de nuevo.");
-            setAdding(false);
-            return null;
-          }
-          return cur;
-        });
-      }, 2500);
-    }
+    // Disparamos la escritura sin await — la suscripción onValue va a confirmar
+    // el resultado real. Si en 8 segundos no llegó, recién ahí mostramos error.
+    dbSet(ref(cloudDb, `clientes/index/${slug}`), { nombre: trimmed, creadoEn: new Date().toISOString() });
   };
 
   const startEdit = (c) => { setEditingSlug(c.slug); setEditValue(c.nombre); setEditError(""); };
@@ -1565,39 +1579,25 @@ function AdminPanel() {
     }
 
     setSavingEdit(true);
-    setPendingEdit({ slug: newSlug, nombre: trimmed });
-    try {
-      if (newSlug !== slug) {
-        const oldClient = (clients || []).find((c) => c.slug === slug);
-        const snap = await get(ref(cloudDb, `clientes/${slug}/dataset`));
-        if (snap.exists()) {
-          await dbSet(ref(cloudDb, `clientes/${newSlug}/dataset`), snap.val());
-        }
-        await dbSet(ref(cloudDb, `clientes/index/${newSlug}`), {
-          nombre: trimmed,
-          creadoEn: (oldClient && oldClient.creadoEn) || new Date().toISOString(),
-        });
-        await dbSet(ref(cloudDb, `clientes/index/${slug}`), null);
-        await dbSet(ref(cloudDb, `clientes/${slug}`), null);
-      } else {
-        await dbSet(ref(cloudDb, `clientes/index/${slug}/nombre`), trimmed);
+    setPendingEdit({ oldSlug: slug, slug: newSlug, nombre: trimmed });
+
+    if (newSlug !== slug) {
+      // Migración: leer datos del viejo, escribir en el nuevo, borrar el viejo
+      const oldClient = (clients || []).find((c) => c.slug === slug);
+      const snap = await get(ref(cloudDb, `clientes/${slug}/dataset`));
+      if (snap.exists()) {
+        dbSet(ref(cloudDb, `clientes/${newSlug}/dataset`), snap.val());
       }
-      setEditingSlug(null);
-      setEditValue("");
-      setSavingEdit(false);
-      setPendingEdit(null);
-    } catch (err) {
-      setTimeout(() => {
-        setPendingEdit((cur) => {
-          if (cur) {
-            setEditError("No se pudo guardar. Intentá de nuevo.");
-            setSavingEdit(false);
-            return null;
-          }
-          return cur;
-        });
-      }, 2500);
+      dbSet(ref(cloudDb, `clientes/index/${newSlug}`), {
+        nombre: trimmed,
+        creadoEn: (oldClient && oldClient.creadoEn) || new Date().toISOString(),
+      });
+      dbSet(ref(cloudDb, `clientes/index/${slug}`), null);
+      dbSet(ref(cloudDb, `clientes/${slug}`), null);
+    } else {
+      dbSet(ref(cloudDb, `clientes/index/${slug}/nombre`), trimmed);
     }
+    // La suscripción onValue confirma el resultado real
   };
 
   const deleteClient = async (slug, nombreCliente) => {
