@@ -4,6 +4,7 @@ import { initializeApp } from "firebase/app";
 import { getDatabase, ref, onValue, get, set as dbSet } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "firebase/auth";
 import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./firebaseConfig.js";
+import DashboardProduccion from "./DashboardProduccion.jsx";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, Legend, LabelList,
@@ -273,6 +274,74 @@ function ClienteDashboard({ slug, isAdmin }) {
   const cloudPath = `${CLOUD_CLIENTS_BASE}/${slug}/dataset`;
   const baseUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
 
+  // Selector de dashboard
+  const dashParam = useMemo(() => {
+    if (typeof window === "undefined") return "costos";
+    return new URLSearchParams(window.location.search).get("dashboard") || "costos";
+  }, []);
+
+  const DASHBOARDS = [
+    { key: "costos",     label: "Costos Agrícolas" },
+    { key: "produccion", label: "Producción" },
+  ];
+  const navTo = (key) => {
+    const u = new URLSearchParams(window.location.search);
+    u.set("dashboard", key);
+    window.history.pushState({}, "", `?${u.toString()}`);
+    window.dispatchEvent(new Event("popstate"));
+  };
+  const [dashKey, setDashKey] = useState(dashParam);
+  useEffect(() => {
+    const onPop = () => {
+      const k = new URLSearchParams(window.location.search).get("dashboard") || "costos";
+      setDashKey(k);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Si es dashboard de producción, renderizamos el componente correspondiente
+  // y solo mostramos el masthead común de cliente.
+  const [clienteNombre, setClienteNombre] = useState("");
+  useEffect(() => {
+    if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
+    const unsub = onValue(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/index/${slug}/nombre`), (snap) => {
+      setClienteNombre(snap.val() || "");
+    });
+    return unsub;
+  }, [slug]);
+
+  const masterhead = (
+    <div className="agri-masthead">
+      <div>
+        {isAdmin && (
+          <a href={baseUrl} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--ink-soft)", textDecoration: "none", marginBottom: 6 }}>
+            <ArrowLeft size={12} /> Panel de clientes
+          </a>
+        )}
+        <div className="agri-title agri-serif">Costos Agrícolas - {clienteNombre || slug}</div>
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          {DASHBOARDS.map((d) => (
+            <button key={d.key} className="agri-chip" data-active={dashKey === d.key} onClick={() => navTo(d.key)}>
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  if (dashKey === "produccion") {
+    return (
+      <>
+        {masterhead}
+        <DashboardProduccion slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} />
+      </>
+    );
+  }
+
+  // --- Dashboard de costos (el resto del componente original) ---
+
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null); // {fileName, updatedAt, rowCount}
   const [bootLoading, setBootLoading] = useState(true);
@@ -280,7 +349,6 @@ function ClienteDashboard({ slug, isAdmin }) {
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [syncStatus, setSyncStatus] = useState(CLOUD_SYNC_ENABLED ? "connecting" : "local");
-  const [clienteNombre, setClienteNombre] = useState("");
   const fileInputRef = useRef(null);
 
   // Filtros
@@ -296,15 +364,6 @@ function ClienteDashboard({ slug, isAdmin }) {
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState({ key: "Fecha", dir: "desc" });
   const [showDetalle, setShowDetalle] = useState(false);
-
-  // Nombre público del cliente (para el título), separado del dataset en sí
-  useEffect(() => {
-    if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
-    const unsub = onValue(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/index/${slug}/nombre`), (snap) => {
-      setClienteNombre(snap.val() || "");
-    });
-    return unsub;
-  }, [slug]);
 
   // Cargar último dataset guardado: primero del caché local (instantáneo),
   // y si hay Firebase configurado, nos suscribimos a la nube (tiempo real).
@@ -802,26 +861,19 @@ function ClienteDashboard({ slug, isAdmin }) {
   // -------------------------------------------------------------------------
   return (
     <div className="agri-shell">
-      {/* Masthead */}
-      <div className="agri-masthead">
-        <div>
-          {isAdmin && (
-            <a href={baseUrl} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--ink-soft)", textDecoration: "none", marginBottom: 6 }}>
-              <ArrowLeft size={12} /> Panel de clientes
-            </a>
-          )}
-          <div className="agri-title agri-serif">Costos Agrícolas - {clienteNombre || slug}</div>
-          <div className="agri-sub">
-            {meta ? (
-              <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
-            ) : isAdmin ? "Cargá tu planilla para empezar a consultar los datos" : "Todavía no hay datos cargados para este cliente."}
-          </div>
-          {CLOUD_SYNC_ENABLED && (
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, marginTop: 6, padding: "3px 9px", borderRadius: 999, background: syncStatus === "cloud" ? "rgba(75,107,58,0.12)" : syncStatus === "error" ? "rgba(161,70,47,0.12)" : "rgba(107,94,79,0.12)", color: syncStatus === "cloud" ? "var(--green)" : syncStatus === "error" ? "var(--rust)" : "var(--ink-soft)" }}>
-              {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado en todos tus dispositivos</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión a la nube · usando datos locales</> : <><Cloud size={12} /> Conectando…</>}
-            </div>
-          )}
+      {masterhead}
+      {/* Sub-header de costos: datos y controles de carga */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+        <div className="agri-sub">
+          {meta ? (
+            <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
+          ) : isAdmin ? "Cargá tu planilla para empezar a consultar los datos" : "Todavía no hay datos cargados para este cliente."}
         </div>
+        {CLOUD_SYNC_ENABLED && (
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999, background: syncStatus === "cloud" ? "rgba(75,107,58,0.12)" : syncStatus === "error" ? "rgba(161,70,47,0.12)" : "rgba(107,94,79,0.12)", color: syncStatus === "cloud" ? "var(--green)" : syncStatus === "error" ? "var(--rust)" : "var(--ink-soft)" }}>
+            {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión</> : <><Cloud size={12} /> Conectando…</>}
+          </div>
+        )}
         {isAdmin && (
           <div style={{ display: "flex", gap: 8 }}>
             <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
