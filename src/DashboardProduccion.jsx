@@ -172,6 +172,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
   const [syncStatus, setSyncStatus] = useState(cloudDb ? "connecting" : "local");
   const fileInputRef = useRef(null);
   const [showDetalle, setShowDetalle] = useState(false);
+  const [selectedBolson, setSelectedBolson] = useState(null);
 
   // Filtros
   const [periodo, setPeriodo] = useState("Todos");
@@ -473,14 +474,10 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
             </div>
             {kpis.stockPermanente !== 0 && (
               <div className="agri-card" style={{ padding: 14 }}>
-                <div className="agri-kpi-label">Stock permanente</div>
+                <div className="agri-kpi-label">Stock en otros dep.</div>
                 <div className="agri-kpi-value">{fmtNum(kpis.stockPermanente, 1)} tn</div>
               </div>
             )}
-            <div className="agri-card" style={{ padding: 14 }}>
-              <div className="agri-kpi-label">Viajes realizados</div>
-              <div className="agri-kpi-value">{kpis.viajes.toLocaleString("es-AR")}</div>
-            </div>
           </div>
 
           {/* Gráficos — fila 1: cosecha */}
@@ -559,16 +556,24 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 500 }}>
                   <thead>
                     <tr>
-                      {["Silo bolsa","Tn en stock"].map((h) => (
-                        <th key={h} className="agri-th">{h}</th>
+                      {["Silo bolsa","Tn en stock",""].map((h) => (
+                        <th key={h} className="agri-th" style={h === "" ? { width: 30 } : {}}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {stockSiloChart.map((e, i) => (
-                      <tr key={i} className="agri-tr">
-                        <td className="agri-td">{e.nombre}</td>
+                      <tr
+                        key={i}
+                        className="agri-tr"
+                        style={{ cursor: "pointer" }}
+                        onClick={() => setSelectedBolson(selectedBolson?.nombre === e.nombre ? null : e)}
+                      >
+                        <td className="agri-td" style={{ color: selectedBolson?.nombre === e.nombre ? "var(--green)" : undefined, fontWeight: selectedBolson?.nombre === e.nombre ? 600 : undefined }}>{e.nombre}</td>
                         <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{fmtTn(e.stock)}</td>
+                        <td className="agri-td" style={{ textAlign: "center", color: "var(--ink-soft)", width: 30 }}>
+                          {selectedBolson?.nombre === e.nombre ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -576,6 +581,75 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
               </div>
             </div>
           )}
+
+          {/* Panel de detalle de bolsón */}
+          {selectedBolson && (() => {
+            const movsBolson = filtered.filter((r) => r["ODT"] === selectedBolson.nombre || r["ODT Contrap."] === selectedBolson.nombre);
+            const entradas = movsBolson.filter((r) => r["ODT"] === selectedBolson.nombre && (r["Neto O."] || 0) > 0);
+            const salidas  = movsBolson.filter((r) => (r["ODT"] === selectedBolson.nombre && (r["Neto O."] || 0) < 0) || (r["ODT Contrap."] === selectedBolson.nombre));
+            const totalEntradas = entradas.reduce((s, r) => s + (r["Neto O."] || 0), 0) / 1000;
+            const totalSalidas  = movsBolson.filter((r) => r["ODT"] === selectedBolson.nombre && (r["Neto O."] || 0) < 0).reduce((s, r) => s + Math.abs(r["Neto O."] || 0), 0) / 1000;
+            const allMovs = filtered.filter((r) => r["ODT"] === selectedBolson.nombre).sort((a, b) => {
+              const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
+              return fa > fb ? -1 : fa < fb ? 1 : 0;
+            });
+            return (
+              <div className="agri-card" style={{ padding: 16, marginBottom: 14, borderLeft: "3px solid var(--green)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+                  <div>
+                    <div className="agri-serif" style={{ fontSize: 16, fontWeight: 700 }}>{selectedBolson.nombre}</div>
+                    <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 2 }}>Silo bolsa · {allMovs.length} movimientos</div>
+                  </div>
+                  <button className="agri-btn agri-btn-outline" onClick={() => setSelectedBolson(null)}>× Cerrar</button>
+                </div>
+                {/* KPIs del bolsón */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 16 }}>
+                  <div style={{ background: "var(--surface)", borderRadius: 8, padding: "10px 14px", border: "1px solid var(--line)" }}>
+                    <div className="agri-kpi-label">Stock actual</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 20, color: "var(--green)" }}>{fmtTn(selectedBolson.stock)}</div>
+                  </div>
+                  <div style={{ background: "var(--surface)", borderRadius: 8, padding: "10px 14px", border: "1px solid var(--line)" }}>
+                    <div className="agri-kpi-label">Total ingresado</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 20 }}>{fmtNum(totalEntradas, 1)} tn</div>
+                  </div>
+                  <div style={{ background: "var(--surface)", borderRadius: 8, padding: "10px 14px", border: "1px solid var(--line)" }}>
+                    <div className="agri-kpi-label">Total egresado</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 20, color: "var(--rust)" }}>{fmtNum(totalSalidas, 1)} tn</div>
+                  </div>
+                </div>
+                {/* Tabla de movimientos */}
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "var(--ink)" }}>Movimientos del silo bolsa</div>
+                <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 600 }}>
+                    <thead>
+                      <tr>
+                        {[["Fecha","Fecha"],["Cultivo","Cultivo"],["Campo","Campo / Origen"],["ODT Contrap.","Contraparte"],["Neto O.","Kg (neto)"]].map(([k,l]) => (
+                          <th key={k} className="agri-th">{l}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allMovs.map((r, i) => {
+                        const kg = r["Neto O."] || 0;
+                        const esEntrada = kg > 0;
+                        return (
+                          <tr key={i} className="agri-tr">
+                            <td className="agri-td" style={{ whiteSpace: "nowrap" }}>{fmtDate(r["Fecha"])}</td>
+                            <td className="agri-td">{r["Cultivo"]}</td>
+                            <td className="agri-td" style={{ fontSize: 12 }}>{r["CampoOrigen"] || r["Campo"] || "—"}</td>
+                            <td className="agri-td" style={{ fontSize: 12, color: "var(--ink-soft)" }}>{r["ODT Contrap."] || "—"}</td>
+                            <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, color: esEntrada ? "var(--green)" : "var(--rust)" }}>
+                              {esEntrada ? "+" : ""}{fmtNum(kg / 1000, 1)} tn
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Tabla detalle colapsable */}
           <div className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
