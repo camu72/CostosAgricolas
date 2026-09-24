@@ -270,27 +270,18 @@ function normalizeRow(r) {
 // Componente principal
 // ---------------------------------------------------------------------------
 function ClienteDashboard({ slug, isAdmin }) {
-  const storageKey = `${STORAGE_KEY_PREFIX}-${slug}`;
-  const cloudPath = `${CLOUD_CLIENTS_BASE}/${slug}/dataset`;
   const baseUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
-
-  // Selector de dashboard
-  const dashParam = useMemo(() => {
-    if (typeof window === "undefined") return "costos";
-    return new URLSearchParams(window.location.search).get("dashboard") || "costos";
-  }, []);
 
   const DASHBOARDS = [
     { key: "costos",     label: "Costos Agrícolas" },
     { key: "produccion", label: "Producción" },
   ];
-  const navTo = (key) => {
-    const u = new URLSearchParams(window.location.search);
-    u.set("dashboard", key);
-    window.history.pushState({}, "", `?${u.toString()}`);
-    window.dispatchEvent(new Event("popstate"));
-  };
-  const [dashKey, setDashKey] = useState(dashParam);
+
+  const [dashKey, setDashKey] = useState(() => {
+    if (typeof window === "undefined") return "costos";
+    return new URLSearchParams(window.location.search).get("dashboard") || "costos";
+  });
+
   useEffect(() => {
     const onPop = () => {
       const k = new URLSearchParams(window.location.search).get("dashboard") || "costos";
@@ -300,8 +291,13 @@ function ClienteDashboard({ slug, isAdmin }) {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  // Si es dashboard de producción, renderizamos el componente correspondiente
-  // y solo mostramos el masthead común de cliente.
+  const navTo = (key) => {
+    const u = new URLSearchParams(window.location.search);
+    u.set("dashboard", key);
+    window.history.pushState({}, "", `?${u.toString()}`);
+    window.dispatchEvent(new Event("popstate"));
+  };
+
   const [clienteNombre, setClienteNombre] = useState("");
   useEffect(() => {
     if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
@@ -331,18 +327,23 @@ function ClienteDashboard({ slug, isAdmin }) {
     </div>
   );
 
-  if (dashKey === "produccion") {
-    return (
-      <>
-        {masterhead}
-        <DashboardProduccion slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} />
-      </>
-    );
-  }
+  return (
+    <div className="agri-shell">
+      {masterhead}
+      {dashKey === "produccion"
+        ? <DashboardProduccion slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} />
+        : <DashboardCostos slug={slug} isAdmin={isAdmin} />
+      }
+    </div>
+  );
+}
 
-  // --- Dashboard de costos (el resto del componente original) ---
-
-  const [rows, setRows] = useState([]);
+// ---------------------------------------------------------------------------
+// Dashboard de costos (extraído de ClienteDashboard para cumplir reglas de hooks)
+// ---------------------------------------------------------------------------
+function DashboardCostos({ slug, isAdmin }) {
+  const storageKey = `${STORAGE_KEY_PREFIX}-${slug}`;
+  const cloudPath = `${CLOUD_CLIENTS_BASE}/${slug}/dataset`;  const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null); // {fileName, updatedAt, rowCount}
   const [bootLoading, setBootLoading] = useState(true);
   const [parsing, setParsing] = useState(false);
@@ -860,8 +861,7 @@ function ClienteDashboard({ slug, isAdmin }) {
 
   // -------------------------------------------------------------------------
   return (
-    <div className="agri-shell">
-      {masterhead}
+    <>
       {/* Sub-header de costos: datos y controles de carga */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
         <div className="agri-sub">
@@ -1460,7 +1460,7 @@ function ClienteDashboard({ slug, isAdmin }) {
             </div>
           </>
         )}
-    </div>
+    </>
   );
 }
 
