@@ -638,14 +638,16 @@ function DashboardCostos({ slug, isAdmin }) {
   // de lo que conviene corregir en el Excel de origen).
   const [showDataQuality, setShowDataQuality] = useState(false);
   // Precios y consumo por ítem (Rubro + Concepto), respetando los filtros activos
+  // Agrupa en dos secciones: Insumos primero, Servicios después.
   const [itemSort, setItemSort] = useState({ key: "costo", dir: "desc" });
   const toggleItemSort = (key) => setItemSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
+  const TIPODET_ORDER_ITEMS = { "INSUMOS": 0, "SERVICIOS": 1 };
   const itemsSummary = useMemo(() => {
     const m = new Map();
     filtered.forEach((r) => {
       const concepto = r["Concepto"] || "(sin concepto)";
       const key = `${r["Tipo item"] || "(sin rubro)"}|${concepto}`;
-      if (!m.has(key)) m.set(key, { rubro: r["Tipo item"] || "(sin rubro)", concepto, unid: r["Unid."], cant: 0, costo: 0, sumUnit: 0, countUnit: 0, movimientos: 0 });
+      if (!m.has(key)) m.set(key, { rubro: r["Tipo item"] || "(sin rubro)", concepto, tipoDet: r["Tipo Det."] || "", unid: r["Unid."], cant: 0, costo: 0, sumUnit: 0, countUnit: 0, movimientos: 0 });
       const e = m.get(key);
       e.movimientos += 1;
       e.cant += r["Cantidad"] || 0;
@@ -653,7 +655,7 @@ function DashboardCostos({ slug, isAdmin }) {
       if (r["U$S/U"] !== null) { e.sumUnit += r["U$S/U"]; e.countUnit += 1; }
     });
     return Array.from(m.values()).map((e) => ({
-      rubro: e.rubro, concepto: e.concepto, unid: e.unid, movimientos: e.movimientos,
+      rubro: e.rubro, concepto: e.concepto, tipoDet: e.tipoDet, unid: e.unid, movimientos: e.movimientos,
       cant: e.cant, costo: e.costo, precioProm: e.countUnit > 0 ? e.sumUnit / e.countUnit : null,
     }));
   }, [filtered]);
@@ -661,6 +663,11 @@ function DashboardCostos({ slug, isAdmin }) {
     const arr = [...itemsSummary];
     const { key, dir } = itemSort;
     arr.sort((a, b) => {
+      // Siempre Insumos antes que Servicios, sin importar la columna elegida
+      const da = TIPODET_ORDER_ITEMS[a.tipoDet] ?? 2;
+      const db = TIPODET_ORDER_ITEMS[b.tipoDet] ?? 2;
+      if (da !== db) return da - db;
+      // Dentro de cada grupo, ordenar por la columna elegida
       let va = a[key], vb = b[key];
       if (va === null) va = dir === "asc" ? Infinity : -Infinity;
       if (vb === null) vb = dir === "asc" ? Infinity : -Infinity;
@@ -1313,16 +1320,29 @@ function DashboardCostos({ slug, isAdmin }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {itemsSorted.map((e, i) => (
-                      <tr key={i} className="agri-tr">
-                        <td className="agri-td">{e.rubro}</td>
-                        <td className="agri-td">{e.concepto}</td>
-                        <td className="agri-td" style={{ textAlign: "right" }}>{e.precioProm === null ? "—" : fmtUSD2(e.precioProm)}</td>
-                        <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.cant, 1)} {e.unid}</td>
-                        <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{fmtUSD2(e.costo)}</td>
-                        <td className="agri-td" style={{ textAlign: "right", color: "var(--ink-soft)" }}>{e.movimientos}</td>
-                      </tr>
-                    ))}
+                    {itemsSorted.map((e, i) => {
+                      const prev = itemsSorted[i - 1];
+                      const esNuevoGrupo = !prev || prev.tipoDet !== e.tipoDet;
+                      return (
+                        <React.Fragment key={i}>
+                          {esNuevoGrupo && e.tipoDet && (
+                            <tr>
+                              <td colSpan={6} style={{ padding: "8px 10px 4px", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", background: "rgba(75,107,58,0.10)", color: "var(--green)", borderTop: i > 0 ? "2px solid var(--ink)" : "none", borderBottom: "1px solid var(--line)" }}>
+                                {e.tipoDet}
+                              </td>
+                            </tr>
+                          )}
+                          <tr className="agri-tr">
+                            <td className="agri-td">{e.rubro}</td>
+                            <td className="agri-td">{e.concepto}</td>
+                            <td className="agri-td" style={{ textAlign: "right" }}>{e.precioProm === null ? "—" : fmtUSD2(e.precioProm)}</td>
+                            <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.cant, 1)} {e.unid}</td>
+                            <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{fmtUSD2(e.costo)}</td>
+                            <td className="agri-td" style={{ textAlign: "right", color: "var(--ink-soft)" }}>{e.movimientos}</td>
+                          </tr>
+                        </React.Fragment>
+                      );
+                    })}
                     {itemsSorted.length === 0 && (
                       <tr><td className="agri-td" colSpan={6} style={{ textAlign: "center", padding: 30, color: "var(--ink-soft)" }}>Ningún ítem coincide con los filtros aplicados.</td></tr>
                     )}
@@ -1397,11 +1417,11 @@ function DashboardCostos({ slug, isAdmin }) {
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", background: "none", border: "none", cursor: "pointer", padding: 0, font: "inherit", color: "inherit" }}
               >
                 <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <ClipboardCheck size={16} color={dataQuality.totals.filasConProblemas > 0 ? "var(--rust)" : "var(--green)"} />
+                  <ClipboardCheck size={16} color={dataQuality.list.length > 0 ? "var(--rust)" : "var(--green)"} />
                   <span className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Control de datos</span>
-                  {dataQuality.totals.filasConProblemas > 0 ? (
+                  {dataQuality.list.length > 0 ? (
                     <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "var(--rust)", borderRadius: 999, padding: "2px 9px" }}>
-                      {fmtNum(dataQuality.totals.filasConProblemas)} filas para revisar
+                      {fmtNum(dataQuality.list.length)} ítems con problemas
                     </span>
                   ) : (
                     <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "var(--green)", borderRadius: 999, padding: "2px 9px" }}>Sin observaciones</span>
