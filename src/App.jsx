@@ -5,6 +5,7 @@ import { getDatabase, ref, onValue, get, set as dbSet } from "firebase/database"
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "firebase/auth";
 import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./firebaseConfig.js";
 import DashboardProduccion from "./DashboardProduccion.jsx";
+import DashboardCultivos from "./DashboardCultivos.jsx";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, Legend, LabelList,
@@ -275,6 +276,7 @@ function ClienteDashboard({ slug, isAdmin }) {
   const DASHBOARDS = [
     { key: "costos",     label: "Costos Agrícolas" },
     { key: "produccion", label: "Producción" },
+    { key: "cultivos",   label: "Cultivos" },
   ];
 
   const [dashKey, setDashKey] = useState(() => {
@@ -332,6 +334,8 @@ function ClienteDashboard({ slug, isAdmin }) {
       {masterhead}
       {dashKey === "produccion"
         ? <DashboardProduccion slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} />
+        : dashKey === "cultivos"
+        ? <DashboardCultivos slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} />
         : <DashboardCostos slug={slug} isAdmin={isAdmin} />
       }
     </div>
