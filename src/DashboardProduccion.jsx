@@ -172,7 +172,9 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
   const [syncStatus, setSyncStatus] = useState(cloudDb ? "connecting" : "local");
   const fileInputRef = useRef(null);
   const [showDetalle, setShowDetalle] = useState(false);
-  const [selectedBolson, setSelectedBolson] = useState(null);
+  const [selectedDeposito, setSelectedDeposito] = useState(null);
+  const [gruposAbiertos, setGruposAbiertos] = useState({ planta: true, silo: true, otros: true });
+  const toggleGrupo = (g) => setGruposAbiertos((prev) => ({ ...prev, [g]: !prev[g] }));
 
   // Filtros
   const [periodo, setPeriodo] = useState("Todos");
@@ -345,8 +347,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
     return Array.from(m.values()).filter((e) => Math.abs(e.stock) > 0.01).sort((a, b) => b.stock - a.stock);
   }, [filtered]);
 
-  const stockPlantaChart = stockPorDeposito.filter((e) => e.tipo.toLowerCase() === "planta de acopio");
-  const stockSiloChart   = stockPorDeposito.filter((e) => e.tipo.toLowerCase() === "temporal");
+  // stockPlantaChart / stockSiloChart ya no se usan — reemplazados por el acordeón unificado
 
   // ---------- Tabla detalle ----------
   const sorted = useMemo(() => {
@@ -530,123 +531,125 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
             </div>
           </div>
 
-          {/* Stock en planta */}
-          {stockPlantaChart.length > 0 && (
-            <div className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
-              <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Stock en plantas de acopio (tn)</div>
-              <ResponsiveContainer width="100%" height={Math.max(160, stockPlantaChart.length * 28)}>
-                <BarChart data={stockPlantaChart} layout="vertical" margin={{ left: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
-                  <YAxis type="category" dataKey="nombre" width={250} tick={{ fontSize: 10, fill: "#2B2118" }} axisLine={false} tickLine={false} />
-                  <Tooltip content={<ChartTooltip unit="tn" />} />
-                  <Bar dataKey="stock" name="Stock" fill="#2F5B66" radius={[0,3,3,0]}>
-                    <LabelList dataKey="stock" content={<HorizontalBarLabel />} />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
+          {/* Stock por depósito — acordeón unificado */}
+          {stockPorDeposito.length > 0 && (() => {
+            const grupos = [
+              { key: "planta", label: "Plantas de acopio", tipoMatch: (t) => t === "planta de acopio" },
+              { key: "silo",   label: "Silo bolsa",        tipoMatch: (t) => t === "temporal" },
+              { key: "otros",  label: "Otros depósitos",   tipoMatch: (t) => t !== "planta de acopio" && t !== "temporal" },
+            ];
 
-          {/* Stock en silo bolsa */}
-          {stockSiloChart.length > 0 && (
-            <div className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
-              <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Stock en silo bolsa (tn)</div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 500 }}>
-                  <thead>
-                    <tr>
-                      {["Silo bolsa","Tn en stock",""].map((h) => (
-                        <th key={h} className="agri-th" style={h === "" ? { width: 30 } : {}}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
+            const PanelDetalle = ({ dep }) => {
+              const allMovs = filtered.filter((r) => r["ODT"] === dep.nombre).sort((a, b) => {
+                const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
+                return fa > fb ? -1 : fa < fb ? 1 : 0;
+              });
+              const totalEntradas = allMovs.filter((r) => (r["Neto O."] || 0) > 0).reduce((s, r) => s + (r["Neto O."] || 0), 0) / 1000;
+              const totalSalidas  = allMovs.filter((r) => (r["Neto O."] || 0) < 0).reduce((s, r) => s + Math.abs(r["Neto O."] || 0), 0) / 1000;
+              return (
+                <tr>
+                  <td colSpan={3} style={{ padding: 0, background: "var(--bg)" }}>
+                    <div style={{ margin: "0 0 2px 32px", padding: 16, background: "var(--surface)", borderLeft: "3px solid var(--green)", borderRadius: "0 0 8px 8px" }}>
+                      <div style={{ fontSize: 12, color: "var(--ink-soft)", marginBottom: 12 }}>{allMovs.length} movimientos</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8, marginBottom: 14 }}>
+                        {[
+                          { label: "Stock actual",    val: fmtTn(dep.stock),              color: "var(--green)" },
+                          { label: "Total ingresado", val: `${fmtNum(totalEntradas,1)} tn`, color: undefined },
+                          { label: "Total egresado",  val: `${fmtNum(totalSalidas,1)} tn`,  color: "var(--rust)" },
+                        ].map(({ label, val, color }) => (
+                          <div key={label} style={{ background: "var(--bg)", borderRadius: 6, padding: "8px 12px", border: "1px solid var(--line)" }}>
+                            <div className="agri-kpi-label">{label}</div>
+                            <div className="agri-kpi-value" style={{ fontSize: 18, color }}>{val}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: "var(--ink)" }}>Movimientos</div>
+                      <div style={{ overflowX: "auto", maxHeight: 300, overflowY: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 500 }}>
+                          <thead>
+                            <tr>
+                              {[["Fecha","Fecha"],["Cultivo","Cultivo"],["Campo","Campo / Origen"],["ODT Contrap.","Contraparte"],["Neto O.","Kg (neto)"]].map(([k,l]) => (
+                                <th key={k} className="agri-th">{l}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {allMovs.map((r, i) => {
+                              const kg = r["Neto O."] || 0;
+                              const esEntrada = kg > 0;
+                              return (
+                                <tr key={i} className="agri-tr">
+                                  <td className="agri-td" style={{ whiteSpace: "nowrap" }}>{fmtDate(r["Fecha"])}</td>
+                                  <td className="agri-td">{r["Cultivo"]}</td>
+                                  <td className="agri-td" style={{ fontSize: 11 }}>{r["CampoOrigen"] || r["Campo"] || "—"}</td>
+                                  <td className="agri-td" style={{ fontSize: 11, color: "var(--ink-soft)" }}>{r["ODT Contrap."] || "—"}</td>
+                                  <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, color: esEntrada ? "var(--green)" : "var(--rust)" }}>
+                                    {esEntrada ? "+" : ""}{fmtNum(kg / 1000, 1)} tn
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              );
+            };
+
+            return (
+              <div className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Stock por depósito</div>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <tbody>
-                    {stockSiloChart.map((e, i) => (
-                      <tr
-                        key={i}
-                        className="agri-tr"
-                        style={{ cursor: "pointer" }}
-                        onClick={() => setSelectedBolson(selectedBolson?.nombre === e.nombre ? null : e)}
-                      >
-                        <td className="agri-td" style={{ color: selectedBolson?.nombre === e.nombre ? "var(--green)" : undefined, fontWeight: selectedBolson?.nombre === e.nombre ? 600 : undefined }}>{e.nombre}</td>
-                        <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{fmtTn(e.stock)}</td>
-                        <td className="agri-td" style={{ textAlign: "center", color: "var(--ink-soft)", width: 30 }}>
-                          {selectedBolson?.nombre === e.nombre ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                        </td>
-                      </tr>
-                    ))}
+                    {grupos.map(({ key, label, tipoMatch }) => {
+                      const items = stockPorDeposito.filter((e) => tipoMatch(e.tipo.toLowerCase()));
+                      if (items.length === 0) return null;
+                      const totalGrupo = items.reduce((s, e) => s + e.stock, 0);
+                      const abierto = gruposAbiertos[key];
+                      return (
+                        <React.Fragment key={key}>
+                          {/* Fila encabezado de grupo */}
+                          <tr
+                            style={{ cursor: "pointer", background: "var(--surface-alt, #F0EBE0)" }}
+                            onClick={() => { toggleGrupo(key); setSelectedDeposito(null); }}
+                          >
+                            <td style={{ padding: "10px 12px", fontWeight: 700, fontSize: 13, color: "var(--ink)", display: "flex", alignItems: "center", gap: 6 }}>
+                              <span style={{ color: "var(--ink-soft)", fontSize: 12 }}>{abierto ? "▾" : "▸"}</span>
+                              {label}
+                            </td>
+                            <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, fontSize: 13, color: "var(--ink)", whiteSpace: "nowrap" }}>
+                              {fmtNum(totalGrupo, 1)} tn
+                            </td>
+                            <td style={{ width: 30 }} />
+                          </tr>
+                          {/* Filas hijos */}
+                          {abierto && items.map((e, i) => (
+                            <React.Fragment key={i}>
+                              <tr
+                                className="agri-tr"
+                                style={{ cursor: "pointer" }}
+                                onClick={() => setSelectedDeposito(selectedDeposito?.nombre === e.nombre ? null : e)}
+                              >
+                                <td className="agri-td" style={{ paddingLeft: 32, color: selectedDeposito?.nombre === e.nombre ? "var(--green)" : undefined, fontWeight: selectedDeposito?.nombre === e.nombre ? 600 : undefined }}>
+                                  {e.nombre}
+                                </td>
+                                <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtTn(e.stock)}</td>
+                                <td className="agri-td" style={{ textAlign: "center", color: "var(--ink-soft)", width: 30 }}>
+                                  {selectedDeposito?.nombre === e.nombre ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                </td>
+                              </tr>
+                              {selectedDeposito?.nombre === e.nombre && <PanelDetalle dep={e} />}
+                            </React.Fragment>
+                          ))}
+                          {/* Separador entre grupos */}
+                          <tr><td colSpan={3} style={{ height: 6 }} /></tr>
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
-              </div>
-            </div>
-          )}
-
-          {/* Panel de detalle de bolsón */}
-          {selectedBolson && (() => {
-            const movsBolson = filtered.filter((r) => r["ODT"] === selectedBolson.nombre || r["ODT Contrap."] === selectedBolson.nombre);
-            const entradas = movsBolson.filter((r) => r["ODT"] === selectedBolson.nombre && (r["Neto O."] || 0) > 0);
-            const salidas  = movsBolson.filter((r) => (r["ODT"] === selectedBolson.nombre && (r["Neto O."] || 0) < 0) || (r["ODT Contrap."] === selectedBolson.nombre));
-            const totalEntradas = entradas.reduce((s, r) => s + (r["Neto O."] || 0), 0) / 1000;
-            const totalSalidas  = movsBolson.filter((r) => r["ODT"] === selectedBolson.nombre && (r["Neto O."] || 0) < 0).reduce((s, r) => s + Math.abs(r["Neto O."] || 0), 0) / 1000;
-            const allMovs = filtered.filter((r) => r["ODT"] === selectedBolson.nombre).sort((a, b) => {
-              const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
-              return fa > fb ? -1 : fa < fb ? 1 : 0;
-            });
-            return (
-              <div className="agri-card" style={{ padding: 16, marginBottom: 14, borderLeft: "3px solid var(--green)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-                  <div>
-                    <div className="agri-serif" style={{ fontSize: 16, fontWeight: 700 }}>{selectedBolson.nombre}</div>
-                    <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 2 }}>Silo bolsa · {allMovs.length} movimientos</div>
-                  </div>
-                  <button className="agri-btn agri-btn-outline" onClick={() => setSelectedBolson(null)}>× Cerrar</button>
-                </div>
-                {/* KPIs del bolsón */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 16 }}>
-                  <div style={{ background: "var(--surface)", borderRadius: 8, padding: "10px 14px", border: "1px solid var(--line)" }}>
-                    <div className="agri-kpi-label">Stock actual</div>
-                    <div className="agri-kpi-value" style={{ fontSize: 20, color: "var(--green)" }}>{fmtTn(selectedBolson.stock)}</div>
-                  </div>
-                  <div style={{ background: "var(--surface)", borderRadius: 8, padding: "10px 14px", border: "1px solid var(--line)" }}>
-                    <div className="agri-kpi-label">Total ingresado</div>
-                    <div className="agri-kpi-value" style={{ fontSize: 20 }}>{fmtNum(totalEntradas, 1)} tn</div>
-                  </div>
-                  <div style={{ background: "var(--surface)", borderRadius: 8, padding: "10px 14px", border: "1px solid var(--line)" }}>
-                    <div className="agri-kpi-label">Total egresado</div>
-                    <div className="agri-kpi-value" style={{ fontSize: 20, color: "var(--rust)" }}>{fmtNum(totalSalidas, 1)} tn</div>
-                  </div>
-                </div>
-                {/* Tabla de movimientos */}
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "var(--ink)" }}>Movimientos del silo bolsa</div>
-                <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 600 }}>
-                    <thead>
-                      <tr>
-                        {[["Fecha","Fecha"],["Cultivo","Cultivo"],["Campo","Campo / Origen"],["ODT Contrap.","Contraparte"],["Neto O.","Kg (neto)"]].map(([k,l]) => (
-                          <th key={k} className="agri-th">{l}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {allMovs.map((r, i) => {
-                        const kg = r["Neto O."] || 0;
-                        const esEntrada = kg > 0;
-                        return (
-                          <tr key={i} className="agri-tr">
-                            <td className="agri-td" style={{ whiteSpace: "nowrap" }}>{fmtDate(r["Fecha"])}</td>
-                            <td className="agri-td">{r["Cultivo"]}</td>
-                            <td className="agri-td" style={{ fontSize: 12 }}>{r["CampoOrigen"] || r["Campo"] || "—"}</td>
-                            <td className="agri-td" style={{ fontSize: 12, color: "var(--ink-soft)" }}>{r["ODT Contrap."] || "—"}</td>
-                            <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, color: esEntrada ? "var(--green)" : "var(--rust)" }}>
-                              {esEntrada ? "+" : ""}{fmtNum(kg / 1000, 1)} tn
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
               </div>
             );
           })()}
