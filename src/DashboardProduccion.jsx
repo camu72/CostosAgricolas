@@ -9,6 +9,7 @@ import {
   ChevronDown, ChevronUp, Download, ArrowUpDown, Cloud, CloudOff, LogOut,
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
+import { PdfMenu, generarPDF, filaGrupo, filaTotal } from "./pdfExport.jsx";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -159,7 +160,8 @@ const VerticalBarLabel = ({ x, y, width, height, value }) => {
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
-export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }) {
+export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, clienteNombre }) {
+  const pdfRootRef = useRef(null);
   const storageKey = `${STORAGE_KEY_PROD}-${slug}`;
   const cloudPath = `clientes/${slug}/produccion`;
 
@@ -392,6 +394,58 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }
     XLSX.writeFile(wb, `produccion_filtrada_${new Date().toISOString().slice(0,10)}.xlsx`);
   }, [sorted]);
 
+  // ---------- PDF ----------
+  const LIMITE_MOVS_PDF = 2000;
+  const exportarPDF = async (modo) => {
+    const filtros = [];
+    if (periodo !== "Todos") filtros.push(["Período", periodo]);
+    if (cultivo !== "Todos") filtros.push(["Cultivo", cultivo]);
+    if (admin !== "Todos") filtros.push(["Admin", admin]);
+    if (campo !== "Todos") filtros.push(["Campo", campo]);
+    if (tipoMov !== "Todos") filtros.push(["Tipo", tipoMov === "Cosecha" ? "Solo cosecha" : "Solo movimientos"]);
+    if (buscar.trim()) filtros.push(["Búsqueda", `"${buscar.trim()}"`]);
+
+    // Stock por depósito, agrupado igual que en pantalla
+    const grupos = [
+      { label: "Plantas de acopio", match: (t) => t === "planta de acopio" },
+      { label: "Silo bolsa",        match: (t) => t === "temporal" },
+      { label: "Otros depósitos",   match: (t) => t !== "planta de acopio" && t !== "temporal" },
+    ];
+    const stockBody = [];
+    let stockTotal = 0;
+    grupos.forEach(({ label, match }) => {
+      const items = stockPorDeposito.filter((e) => match(String(e.tipo).toLowerCase()));
+      if (!items.length) return;
+      const tg = items.reduce((a, e) => a + e.stock, 0);
+      stockTotal += tg;
+      stockBody.push(filaGrupo(label, 5, ["", "", fmtNum(tg, 1)]));
+      items.forEach((e) => {
+        const movs = filtered.filter((r) => r["ODT"] === e.nombre);
+        const ent = movs.filter((r) => (r["Neto O."] || 0) > 0).reduce((a, r) => a + r["Neto O."], 0) / 1000;
+        const sal = movs.filter((r) => (r["Neto O."] || 0) < 0).reduce((a, r) => a + Math.abs(r["Neto O."]), 0) / 1000;
+        stockBody.push([e.nombre, e.tipo, fmtNum(ent, 1), fmtNum(sal, 1), fmtNum(e.stock, 1)]);
+      });
+    });
+    stockBody.push(filaTotal(["Total", "", "", "", fmtNum(stockTotal, 1)]));
+
+    const movs = sorted.slice(0, LIMITE_MOVS_PDF);
+    await generarPDF({
+      modo, titulo: "Producción", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Produccion",
+      tablas: [
+        { titulo: "Stock por depósito", nota: "Toneladas. Ingresado y egresado según Neto O. de los movimientos filtrados.",
+          head: ["Depósito", "Tipo", "Ingresado (tn)", "Egresado (tn)", "Stock (tn)"], align: [null, null, "right", "right", "right"], body: stockBody },
+        { titulo: "Detalle de movimientos",
+          nota: sorted.length > LIMITE_MOVS_PDF
+            ? `Se incluyen los primeros ${fmtNum(LIMITE_MOVS_PDF)} de ${fmtNum(sorted.length)} movimientos (orden actual de la tabla). Para el detalle completo, filtrá o usá Exportar a Excel.`
+            : `${fmtNum(sorted.length)} movimientos. Neto O. en kg.`,
+          head: ["Fecha", "Cultivo", "Campo", "Lote", "Tipo dep.", "ODT", "Tipo contrap.", "ODT contrap.", "Neto O. (kg)", "Dominio", "Transporte"],
+          align: [null, null, null, null, null, null, null, null, "right", null, null],
+          body: movs.map((r) => [fmtDate(r["Fecha"]), r["Cultivo"], r["Campo"], r["Lote"], r["TipoDep"], r["ODT"], r["TipoDepContrap."], r["ODT Contrap."],
+            r["Neto O."] === null ? "-" : fmtNum(r["Neto O."], 0), r["Dominio"], r["Transporte"]]) },
+      ],
+    });
+  };
+
   const resetFiltros = () => { setBuscar(""); setPeriodo("Todos"); setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setTipoMov("Todos"); };
   const hayFiltros = buscar !== "" || periodo !== "Todos" || cultivo !== "Todos" || admin !== "Todos" || campo !== "Todos" || tipoMov !== "Todos";
 
@@ -410,8 +464,9 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }
           {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión</> : <><Cloud size={12} /> Conectando…</>}
         </div>
       )}
-      {isAdmin && (
-        <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} />}
+        {isAdmin && (<>
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
             onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
           {meta && (
@@ -429,14 +484,14 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }
               <LogOut size={14} />
             </button>
           )}
-        </div>
-      )}
+        </>)}
+      </div>
     </div>
   );
 
   // -------------------------------------------------------------------------
   return (
-    <div className="agri-shell">
+    <div className="agri-shell" ref={pdfRootRef}>
       {!bootLoading && subHeader}
       {bootLoading ? (
         <div style={{ padding: 60, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
@@ -506,7 +561,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }
           </div>
 
           {/* KPIs */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, marginBottom: 20 }}>
+          <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, marginBottom: 20 }}>
             <div className="agri-card" style={{ padding: 14 }}>
               <div className="agri-kpi-label">Tn cosechadas</div>
               <div className="agri-kpi-value">{fmtNum(kpis.tnCosechadas, 1)}</div>
@@ -528,7 +583,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }
           </div>
 
           {/* Gráficos — fila 1: cosecha */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 14, marginBottom: 14 }}>
+          <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 14, marginBottom: 14 }}>
             <div className="agri-card" style={{ padding: 16 }}>
               <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Cosecha por cultivo (tn)</div>
               <ResponsiveContainer width="100%" height={220}>
@@ -645,7 +700,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }
             };
 
             return (
-              <div className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
+              <div data-pdf="pantalla" className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Stock por depósito</div>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <tbody>
@@ -701,15 +756,17 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }
           })()}
 
           {/* Tabla detalle colapsable */}
-          <div className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
+          <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
             <div style={{ padding: "12px 16px", borderBottom: showDetalle ? "1px solid var(--line)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Detalle de movimientos</div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(sorted.length)} registros</span>
+                <span data-pdf-ignore style={{ display: "contents" }}>
                 <button className="agri-btn agri-btn-outline" onClick={exportToExcel}><Download size={13} /> Exportar</button>
                 <button className="agri-btn agri-btn-outline" onClick={() => setShowDetalle((v) => !v)}>
                   {showDetalle ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                 </button>
+                </span>
               </div>
             </div>
             {showDetalle && (

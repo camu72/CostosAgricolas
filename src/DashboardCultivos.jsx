@@ -9,6 +9,7 @@ import {
   ChevronDown, ChevronUp, Download, Search, X, Cloud, CloudOff, LogOut,
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
+import { PdfMenu, generarPDF, filaGrupo, filaTotal } from "./pdfExport.jsx";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -195,7 +196,8 @@ const BarraTrilla = ({ pct }) => {
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
-export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) {
+export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, clienteNombre }) {
+  const pdfRootRef = useRef(null);
   const storageKey = `${STORAGE_KEY_CULT}-${slug}`;
   const cloudPath = `clientes/${slug}/cultivos`;
 
@@ -473,6 +475,43 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) 
     XLSX.writeFile(wb, `cultivos_filtrado_${new Date().toISOString().slice(0,10)}.xlsx`);
   }, [unidades]);
 
+  // ---------- PDF ----------
+  const exportarPDF = async (modo) => {
+    const filtros = [];
+    if (campania) filtros.push(["Campaña", campania === "Todas" ? "Todas" : campania]);
+    if (cultivo !== "Todos") filtros.push(["Cultivo", cultivo]);
+    if (admin !== "Todos") filtros.push(["Admin", admin]);
+    if (campo !== "Todos") filtros.push(["Campo", campo]);
+    if (variedad !== "Todos") filtros.push(["Variedad", variedad]);
+    if (buscar.trim()) filtros.push(["Búsqueda", `"${buscar.trim()}"`]);
+    const head = ["Lote", "Cultivo", "Variedad", "Siembra", "Has semb.", "Has act.", "Trilla", "Has tri.", "% Trilla", "Neto O (tn)", "Desc D (tn)", "Rinde", "Rinde con."];
+    const align = [null, null, null, null, "right", "right", null, "right", "right", "right", "right", "right", "right"];
+    const fila = (u) => [
+      u.lote + (u.hasSemb - u.hasAct > 0.005 ? " (R)" : ""), u.cultivo, u.variedad, fmtDate(u.siembra),
+      fmtNum(u.hasSemb, 2), fmtNum(u.hasAct, 2), u.trilla ? fmtDate(u.trilla) : "Pendiente", fmtNum(u.hasTri, 2),
+      `${fmtNum(u.pctTri, 1)} %`, fmtNum(u.netoO / 1000, 1), fmtNum(u.descD / 1000, 1),
+      u.hasTri > 0 ? fmtNum(u.rinde) : "-", u.hasAct > 0 && u.descD > 0 ? fmtNum(u.rindeCon) : "-",
+    ];
+    const body = [];
+    tablaCampos.forEach(({ campo: c, unidades: us, tot: t, unCultivo }) => {
+      body.push(filaGrupo(`${c} · ${us.length} unidades`, head.length, [
+        "", fmtNum(t.hasAct, 1), "", fmtNum(t.hasTri, 1), `${fmtNum(t.pctTri, 1)} %`, fmtNum(t.netoO / 1000, 1), fmtNum(t.descD / 1000, 1),
+        unCultivo && t.hasTri > 0 ? fmtNum(t.rinde) : "-", unCultivo && t.hasAct > 0 ? fmtNum(t.rindeCon) : "-",
+      ]));
+      us.forEach((u) => body.push(fila(u)));
+    });
+    body.push(filaTotal(["Total", "", "", "", fmtNum(tot.hasSemb, 1), fmtNum(tot.hasAct, 1), "", fmtNum(tot.hasTri, 1), `${fmtNum(tot.pctTri, 1)} %`,
+      fmtNum(tot.netoO / 1000, 1), fmtNum(tot.descD / 1000, 1), unSoloCultivo ? fmtNum(tot.rinde) : "-", unSoloCultivo ? fmtNum(tot.rindeCon) : "-"]));
+    await generarPDF({
+      modo, titulo: "Cultivos", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Cultivos",
+      tablas: [{
+        titulo: "Cosecha por lote",
+        nota: "(R) lote con resiembra. Rinde = Neto (O) / has trilladas · Rinde con. = Desc (D) / has activas. Pesos en toneladas.",
+        head, align, body,
+      }],
+    });
+  };
+
   const resetFiltros = () => { setBuscar(""); setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setVariedad("Todos"); };
   const hayFiltros = buscar !== "" || cultivo !== "Todos" || admin !== "Todos" || campo !== "Todos" || variedad !== "Todos";
 
@@ -570,8 +609,9 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) 
           {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión</> : <><Cloud size={12} /> Conectando…</>}
         </div>
       )}
-      {isAdmin && (
-        <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} />}
+        {isAdmin && (<>
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
             onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
           {meta && (
@@ -589,14 +629,14 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) 
               <LogOut size={14} />
             </button>
           )}
-        </div>
-      )}
+        </>)}
+      </div>
     </div>
   );
 
   // -------------------------------------------------------------------------
   return (
-    <div className="agri-shell">
+    <div className="agri-shell" ref={pdfRootRef}>
       {!bootLoading && subHeader}
       {bootLoading ? (
         <div style={{ padding: 60, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
@@ -664,7 +704,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) 
           ) : (
           <>
           {/* KPIs */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12, marginBottom: 20 }}>
+          <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12, marginBottom: 20 }}>
             <div className="agri-card" style={{ padding: 14 }}>
               <div className="agri-kpi-label">Has activas</div>
               <div className="agri-kpi-value">{fmtNum(tot.hasAct, 0)}</div>
@@ -710,7 +750,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) 
           </div>
 
           {/* Gráficos — fila 1: avance */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 14, marginBottom: 14 }}>
+          <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 14, marginBottom: 14 }}>
             <div className="agri-card" style={{ padding: 16 }}>
               <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 2 }}>Avance de cosecha</div>
               <div style={{ fontSize: 11, color: "var(--ink-soft)", marginBottom: 8 }}>% acumulado de has activas trilladas, por fecha de trilla</div>
@@ -752,7 +792,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) 
           </div>
 
           {/* Gráficos — fila 2: rindes */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 14, marginBottom: 14 }}>
+          <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(340px,1fr))", gap: 14, marginBottom: 14 }}>
             <div className="agri-card" style={{ padding: 16 }}>
               <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 2 }}>Rinde por campo (kg/ha)</div>
               <div style={{ fontSize: 11, color: "var(--ink-soft)", marginBottom: 8 }}>Neto (O) / has trilladas, por cultivo</div>
@@ -796,10 +836,10 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) 
           </div>
 
           {/* Tabla por campo → lote · cultivo · variedad */}
-          <div className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
+          <div data-pdf="pantalla" className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
               <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Cosecha por lote</div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div data-pdf-ignore style={{ display: "flex", gap: 8 }}>
                 <button className="agri-btn agri-btn-outline" onClick={() => {
                   const todosAbiertos = tablaCampos.every((c) => camposAbiertos[c.campo]);
                   const o = {}; tablaCampos.forEach((c) => { o[c.campo] = !todosAbiertos; });

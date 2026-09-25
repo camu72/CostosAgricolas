@@ -6,6 +6,7 @@ import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from
 import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./firebaseConfig.js";
 import DashboardProduccion from "./DashboardProduccion.jsx";
 import DashboardCultivos from "./DashboardCultivos.jsx";
+import { PdfMenu, generarPDF, filaGrupo, filaTotal } from "./pdfExport.jsx";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, Legend, LabelList,
@@ -333,10 +334,10 @@ function ClienteDashboard({ slug, isAdmin }) {
     <div className="agri-shell">
       {masterhead}
       {dashKey === "produccion"
-        ? <DashboardProduccion slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} onLogout={cloudAuth ? () => signOut(cloudAuth) : null} />
+        ? <DashboardProduccion slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} clienteNombre={clienteNombre} onLogout={cloudAuth ? () => signOut(cloudAuth) : null} />
         : dashKey === "cultivos"
-        ? <DashboardCultivos slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} onLogout={cloudAuth ? () => signOut(cloudAuth) : null} />
-        : <DashboardCostos slug={slug} isAdmin={isAdmin} />
+        ? <DashboardCultivos slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} clienteNombre={clienteNombre} onLogout={cloudAuth ? () => signOut(cloudAuth) : null} />
+        : <DashboardCostos slug={slug} isAdmin={isAdmin} clienteNombre={clienteNombre} />
       }
     </div>
   );
@@ -345,7 +346,8 @@ function ClienteDashboard({ slug, isAdmin }) {
 // ---------------------------------------------------------------------------
 // Dashboard de costos (extraído de ClienteDashboard para cumplir reglas de hooks)
 // ---------------------------------------------------------------------------
-function DashboardCostos({ slug, isAdmin }) {
+function DashboardCostos({ slug, isAdmin, clienteNombre }) {
+  const pdfRootRef = useRef(null);
   const storageKey = `${STORAGE_KEY_PREFIX}-${slug}`;
   const cloudPath = `${CLOUD_CLIENTS_BASE}/${slug}/dataset`;  const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null); // {fileName, updatedAt, rowCount}
@@ -867,12 +869,57 @@ function DashboardCostos({ slug, isAdmin }) {
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
   };
 
+  // ---------- PDF ----------
+  const LIMITE_MOVS_PDF = 2000;
+  const exportarPDF = async (modo) => {
+    const filtros = [];
+    if (cultivo !== "Todos") filtros.push(["Cultivo", cultivo]);
+    if (administracion !== "Todos") filtros.push(["Admin", administracion]);
+    if (campo !== "Todos") filtros.push(["Campo", campo]);
+    if (lote !== "Todos") filtros.push(["Lote", loteOptions.find((o) => o.value === lote)?.label || lote]);
+    if (tipoDet !== "Todos") filtros.push(["Tipo", tipoDet === "INSUMOS" ? "Solo insumos" : "Solo servicios"]);
+    if (tipoItem !== "Todos") filtros.push(["Rubro", tipoItem]);
+    if (desde || hasta) filtros.push(["Fechas", `${desde ? fmtDate(desde) : "..."} a ${hasta ? fmtDate(hasta) : "..."}`]);
+    if (search.trim()) filtros.push(["Búsqueda", `"${search.trim()}"`]);
+
+    const itemsBody = [];
+    itemsSorted.forEach((e, i) => {
+      if (e.tipoDet && (i === 0 || itemsSorted[i - 1].tipoDet !== e.tipoDet)) itemsBody.push(filaGrupo(e.tipoDet, 6));
+      itemsBody.push([e.rubro, e.concepto, e.precioProm === null ? "-" : fmtUSD2(e.precioProm), `${fmtNum(e.cant, 1)} ${e.unid || ""}`, fmtUSD2(e.costo), String(e.movimientos)]);
+    });
+    const tot = loteSorted.reduce((a, e) => ({ ha: a.ha + e.ha, insumos: a.insumos + e.insumos, servicios: a.servicios + e.servicios, total: a.total + e.total }), { ha: 0, insumos: 0, servicios: 0, total: 0 });
+    const movs = sorted.slice(0, LIMITE_MOVS_PDF);
+    await generarPDF({
+      modo, titulo: "Costos Agrícolas", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Costos",
+      tablas: [
+        { titulo: "Comparativo por lote", nota: `${fmtNum(loteSorted.length)} lotes · orden actual de la tabla.`,
+          head: ["Campo", "Lote", "Cultivo", "Variedad", "Ha", "Insumos", "Servicios", "Total", "USD/ha"],
+          align: [null, null, null, null, "right", "right", "right", "right", "right"],
+          body: [
+            ...loteSorted.map((e) => [e.campo, e.lote, e.cultivo, e.variedad, fmtNum(e.ha, 1), fmtUSD(e.insumos), fmtUSD(e.servicios), fmtUSD(e.total), fmtUSD2(e.costoHa)]),
+            filaTotal(["Total", "", "", "", fmtNum(tot.ha, 1), fmtUSD(tot.insumos), fmtUSD(tot.servicios), fmtUSD(tot.total), tot.ha > 0 ? fmtUSD2(tot.total / tot.ha) : "-"]),
+          ] },
+        { titulo: "Precios y consumo por ítem", nota: `${fmtNum(itemsSorted.length)} ítems.`,
+          head: ["Rubro", "Concepto", "Precio prom.", "Cantidad total", "Costo total", "Movs."],
+          align: [null, null, "right", "right", "right", "right"], body: itemsBody },
+        { titulo: "Detalle de movimientos",
+          nota: sorted.length > LIMITE_MOVS_PDF
+            ? `Se incluyen los primeros ${fmtNum(LIMITE_MOVS_PDF)} de ${fmtNum(sorted.length)} movimientos (orden actual de la tabla). Para el detalle completo, filtrá o usá Exportar a Excel.`
+            : `${fmtNum(sorted.length)} movimientos.`,
+          head: ["Fecha", "Campo", "Lote", "Cultivo", "Labor", "Rubro", "Concepto", "Cant.", "Un.", "USD"],
+          align: [null, null, null, null, null, null, null, "right", null, "right"],
+          body: movs.map((r) => [fmtDate(r["Fecha"]), r["Campo"], r["Lote"], r["Cultivo"], r["Origen"], r["Tipo item"], r["Concepto"],
+            fmtNum(r["Cantidad"], 2), r["Unid."], r["U$S/Total"] === null ? "-" : fmtUSD2(r["U$S/Total"])]) },
+      ],
+    });
+  };
+
   const resetFiltros = () => { setCultivo("Todos"); setCampo("Todos"); setLote("Todos"); setAdministracion("Todos"); setTipoDet("Todos"); setTipoItem("Todos"); setDesde(""); setHasta(""); setSearch(""); };
   const hayFiltrosActivos = cultivo !== "Todos" || campo !== "Todos" || lote !== "Todos" || administracion !== "Todos" || tipoDet !== "Todos" || tipoItem !== "Todos" || desde || hasta || search;
 
   // -------------------------------------------------------------------------
   return (
-    <>
+    <div ref={pdfRootRef}>
       {/* Sub-header de costos: datos y controles de carga */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
         <div className="agri-sub">
@@ -885,8 +932,9 @@ function DashboardCostos({ slug, isAdmin }) {
             {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión</> : <><Cloud size={12} /> Conectando…</>}
           </div>
         )}
-        {isAdmin && (
-          <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} />}
+          {isAdmin && (<>
             <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
               onChange={(e) => handleFile(e.target.files?.[0])} />
             {meta && (
@@ -902,8 +950,8 @@ function DashboardCostos({ slug, isAdmin }) {
             <button className="agri-btn agri-btn-outline" onClick={() => signOut(cloudAuth)} title="Cerrar sesión">
               <LogOut size={14} />
             </button>
-          </div>
-        )}
+          </>)}
+        </div>
       </div>
 
       {bootLoading ? (
@@ -988,7 +1036,7 @@ function DashboardCostos({ slug, isAdmin }) {
             </div>
 
             {/* KPIs */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
+            <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
               <div className="agri-card" style={{ padding: 14 }}>
                 <div className="agri-kpi-label"><DollarSign size={12} style={{ display: "inline", marginBottom: -1 }} /> Gasto total</div>
                 <div className="agri-kpi-value">{fmtUSD(kpis.gasto)}</div>
@@ -1013,7 +1061,7 @@ function DashboardCostos({ slug, isAdmin }) {
             </div>
 
             {/* Gráficos — todos normalizados por hectárea y desglosados por cultivo */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginBottom: 20 }}>
+            <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginBottom: 20 }}>
               <div className="agri-card" style={{ padding: 16 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Costo por hectárea · por cultivo</div>
                 <ResponsiveContainer width="100%" height={220}>
@@ -1069,7 +1117,7 @@ function DashboardCostos({ slug, isAdmin }) {
             </div>
 
             {/* Comparativo por lotes */}
-            <div className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
+            <div data-pdf="resumen" className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
               <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Lotes con mayor gasto por hectárea</div>
               <ResponsiveContainer width="100%" height={Math.max(180, topLotesPorGasto.length * 26)}>
                 <BarChart data={topLotesPorGasto} layout="vertical" margin={{ left: 10, right: 10 }}>
@@ -1084,7 +1132,7 @@ function DashboardCostos({ slug, isAdmin }) {
               </ResponsiveContainer>
             </div>
 
-            <div className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
+            <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
               <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Comparativo por lote</div>
                 <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(loteSorted.length)} lotes · tocá una fila para ver el detalle</div>
@@ -1141,7 +1189,7 @@ function DashboardCostos({ slug, isAdmin }) {
 
             {/* Detalle del lote seleccionado */}
             {selectedLoteInfo && (
-              <div className="agri-card" style={{ padding: 16, marginBottom: 20, borderColor: "var(--gold)" }}>
+              <div data-pdf="pantalla" className="agri-card" style={{ padding: 16, marginBottom: 20, borderColor: "var(--gold)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
                   <div>
                     <div className="agri-serif" style={{ fontSize: 15, fontWeight: 700 }}>
@@ -1305,7 +1353,7 @@ function DashboardCostos({ slug, isAdmin }) {
             )}
 
             {/* Precios y consumo por ítem */}
-            <div className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
+            <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
               <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Precios y consumo por ítem</div>
                 <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(itemsSorted.length)} ítems · según filtros de arriba</div>
@@ -1356,15 +1404,17 @@ function DashboardCostos({ slug, isAdmin }) {
             </div>
 
             {/* Tabla */}
-            <div className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
+            <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ padding: "12px 16px", borderBottom: showDetalle ? "1px solid var(--line)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Detalle de movimientos</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(sorted.length)} registros filtrados</span>
+                  <span data-pdf-ignore style={{ display: "contents" }}>
                   <button className="agri-btn agri-btn-outline" onClick={exportToExcel}><Download size={13} /> Exportar a Excel</button>
                   <button className="agri-btn agri-btn-outline" onClick={() => setShowDetalle((v) => !v)} title={showDetalle ? "Colapsar" : "Expandir"}>
                     {showDetalle ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   </button>
+                  </span>
                 </div>
               </div>
               {showDetalle && (
@@ -1484,7 +1534,7 @@ function DashboardCostos({ slug, isAdmin }) {
             </div>
           </>
         )}
-    </>
+    </div>
   );
 }
 
