@@ -6,7 +6,7 @@ import {
 } from "recharts";
 import {
   Upload, RefreshCw, FileSpreadsheet, AlertCircle, Trash2,
-  ChevronDown, ChevronUp, Download, ArrowUpDown,
+  ChevronDown, ChevronUp, Download, ArrowUpDown, Cloud, CloudOff, LogOut,
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
 
@@ -159,7 +159,7 @@ const VerticalBarLabel = ({ x, y, width, height, value }) => {
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
-export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
+export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout }) {
   const storageKey = `${STORAGE_KEY_PROD}-${slug}`;
   const cloudPath = `clientes/${slug}/produccion`;
 
@@ -168,6 +168,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
   const [bootLoading, setBootLoading] = useState(true);
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState("");
+  const [aviso, setAviso] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [syncStatus, setSyncStatus] = useState(cloudDb ? "connecting" : "local");
   const fileInputRef = useRef(null);
@@ -226,13 +227,13 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
     try { localStorage.setItem(storageKey, JSON.stringify(payload)); } catch (e) {}
     if (cloudDb) {
       try { await dbSet(dbRef(cloudDb, cloudPath), payload); setSyncStatus("cloud"); }
-      catch (e) { setSyncStatus("error"); }
+      catch (e) { setSyncStatus("error"); throw e; }
     }
   }, [slug, cloudDb]);
 
   const handleFile = useCallback(async (file) => {
     if (!file) return;
-    setParsing(true); setError("");
+    setParsing(true); setError(""); setAviso("");
     try {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array", cellDates: true });
@@ -243,7 +244,11 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
       setRows(normalized);
       setMeta({ fileName: file.name, updatedAt: new Date().toISOString(), rowCount: normalized.length });
       setPage(1);
-      await persist(normalized, file.name);
+      try {
+        await persist(normalized, file.name);
+      } catch (e) {
+        setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`);
+      }
     } catch (e) {
       setError("No pude leer el archivo: " + e.message);
     } finally {
@@ -390,9 +395,49 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
   const resetFiltros = () => { setBuscar(""); setPeriodo("Todos"); setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setTipoMov("Todos"); };
   const hayFiltros = buscar !== "" || periodo !== "Todos" || cultivo !== "Todos" || admin !== "Todos" || campo !== "Todos" || tipoMov !== "Todos";
 
+  // Sub-header común a todos los dashboards: datos, estado de sincronización y controles de carga
+  const subHeader = (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+      <div className="agri-sub">
+        {meta ? (
+          <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
+        ) : isAdmin ? "Cargá tu planilla para empezar a consultar los datos" : "Todavía no hay datos cargados para este cliente."}
+        {aviso && <span style={{ color: "var(--green)", marginLeft: 8 }}>· {aviso}</span>}
+        {error && meta && <span style={{ color: "var(--rust)", marginLeft: 8 }}>· {error}</span>}
+      </div>
+      {cloudDb && (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999, background: syncStatus === "cloud" ? "rgba(75,107,58,0.12)" : syncStatus === "error" ? "rgba(161,70,47,0.12)" : "rgba(107,94,79,0.12)", color: syncStatus === "cloud" ? "var(--green)" : syncStatus === "error" ? "var(--rust)" : "var(--ink-soft)" }}>
+          {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión</> : <><Cloud size={12} /> Conectando…</>}
+        </div>
+      )}
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 8 }}>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+            onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
+          {meta && (
+            <>
+              <button className="agri-btn" disabled={parsing} onClick={() => fileInputRef.current?.click()}>
+                <RefreshCw size={14} /> {parsing ? "Procesando…" : "Actualizar datos"}
+              </button>
+              <button className="agri-btn agri-btn-outline" onClick={clearDataset}>
+                <Trash2 size={14} />
+              </button>
+            </>
+          )}
+          {onLogout && (
+            <button className="agri-btn agri-btn-outline" onClick={onLogout} title="Cerrar sesión">
+              <LogOut size={14} />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   // -------------------------------------------------------------------------
   return (
     <div className="agri-shell">
+      {!bootLoading && subHeader}
       {bootLoading ? (
         <div style={{ padding: 60, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
       ) : !meta || rows.length === 0 ? (
@@ -408,8 +453,6 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
             <div style={{ fontSize: 13, color: "var(--ink-soft)", maxWidth: 380 }}>
               Planilla de movimientos con columnas ODT, TipoDep, Neto O., etc.
             </div>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
-              onChange={(e) => handleFile(e.target.files?.[0])} />
             <button className="agri-btn" disabled={parsing} onClick={() => fileInputRef.current?.click()}>
               <Upload size={14} /> {parsing ? "Procesando…" : "Elegir archivo"}
             </button>
@@ -424,20 +467,6 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
         )
       ) : (
         <>
-          {/* Sub-header de este dashboard */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-            <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>
-              {meta.rowCount.toLocaleString("es-AR")} movimientos · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"})}
-            </div>
-            {isAdmin && (
-              <div style={{ display: "flex", gap: 8 }}>
-                <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files?.[0])} />
-                <button className="agri-btn" onClick={() => fileInputRef.current?.click()}><RefreshCw size={13} /> Actualizar datos</button>
-                <button className="agri-btn agri-btn-outline" onClick={clearDataset}><Trash2 size={13} /></button>
-              </div>
-            )}
-          </div>
-
           {/* Filtros */}
           <div className="agri-card" style={{ padding: 14, marginBottom: 18 }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>

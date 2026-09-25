@@ -333,9 +333,9 @@ function ClienteDashboard({ slug, isAdmin }) {
     <div className="agri-shell">
       {masterhead}
       {dashKey === "produccion"
-        ? <DashboardProduccion slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} />
+        ? <DashboardProduccion slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} onLogout={cloudAuth ? () => signOut(cloudAuth) : null} />
         : dashKey === "cultivos"
-        ? <DashboardCultivos slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} />
+        ? <DashboardCultivos slug={slug} isAdmin={isAdmin} cloudDb={cloudDb} onLogout={cloudAuth ? () => signOut(cloudAuth) : null} />
         : <DashboardCostos slug={slug} isAdmin={isAdmin} />
       }
     </div>

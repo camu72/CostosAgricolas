@@ -6,7 +6,7 @@ import {
 } from "recharts";
 import {
   Upload, RefreshCw, FileSpreadsheet, AlertCircle, Trash2,
-  ChevronDown, ChevronUp, Download, Search, X,
+  ChevronDown, ChevronUp, Download, Search, X, Cloud, CloudOff, LogOut,
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
 
@@ -195,7 +195,7 @@ const BarraTrilla = ({ pct }) => {
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
-export default function DashboardCultivos({ slug, isAdmin, cloudDb }) {
+export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout }) {
   const storageKey = `${STORAGE_KEY_CULT}-${slug}`;
   const cloudPath = `clientes/${slug}/cultivos`;
 
@@ -205,6 +205,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb }) {
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
+  const [syncStatus, setSyncStatus] = useState(cloudDb ? "connecting" : "local");
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -241,8 +242,9 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb }) {
           setRows(r);
           setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: r.length });
         }
+        setSyncStatus("cloud");
         setBootLoading(false);
-      }, () => setBootLoading(false));
+      }, () => { setSyncStatus("error"); setBootLoading(false); });
     } else {
       setBootLoading(false);
     }
@@ -256,7 +258,10 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb }) {
       fileName, updatedAt: new Date().toISOString(),
     };
     try { localStorage.setItem(storageKey, JSON.stringify(payload)); } catch (e) {}
-    if (cloudDb) { await dbSet(dbRef(cloudDb, cloudPath), payload); }
+    if (cloudDb) {
+      try { await dbSet(dbRef(cloudDb, cloudPath), payload); setSyncStatus("cloud"); }
+      catch (e) { setSyncStatus("error"); throw e; }
+    }
   }, [slug, cloudDb]);
 
   // Al subir un Excel se reemplazan sólo las campañas que contiene; las demás se conservan.
@@ -280,7 +285,12 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb }) {
       const lista = Array.from(campNuevas).sort();
       setCampania(lista[lista.length - 1] || "");
       setAviso(`Actualizada${lista.length > 1 ? "s" : ""}: ${lista.join(", ")}${conservadas.length ? " · se conservaron las demás campañas" : ""}`);
-      await persist(all, file.name);
+      try {
+        await persist(all, file.name);
+      } catch (e) {
+        setAviso("");
+        setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`);
+      }
     } catch (e) {
       setError("No pude leer el archivo: " + e.message);
     } finally {
@@ -545,9 +555,49 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb }) {
     );
   };
 
+  // Sub-header común a todos los dashboards: datos, estado de sincronización y controles de carga
+  const subHeader = (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+      <div className="agri-sub">
+        {meta ? (
+          <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
+        ) : isAdmin ? "Cargá tu planilla para empezar a consultar los datos" : "Todavía no hay datos cargados para este cliente."}
+        {aviso && <span style={{ color: "var(--green)", marginLeft: 8 }}>· {aviso}</span>}
+        {error && meta && <span style={{ color: "var(--rust)", marginLeft: 8 }}>· {error}</span>}
+      </div>
+      {cloudDb && (
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999, background: syncStatus === "cloud" ? "rgba(75,107,58,0.12)" : syncStatus === "error" ? "rgba(161,70,47,0.12)" : "rgba(107,94,79,0.12)", color: syncStatus === "cloud" ? "var(--green)" : syncStatus === "error" ? "var(--rust)" : "var(--ink-soft)" }}>
+          {syncStatus === "cloud" ? <><Cloud size={12} /> Sincronizado</> : syncStatus === "error" ? <><CloudOff size={12} /> Sin conexión</> : <><Cloud size={12} /> Conectando…</>}
+        </div>
+      )}
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 8 }}>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+            onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
+          {meta && (
+            <>
+              <button className="agri-btn" disabled={parsing} onClick={() => fileInputRef.current?.click()}>
+                <RefreshCw size={14} /> {parsing ? "Procesando…" : "Actualizar datos"}
+              </button>
+              <button className="agri-btn agri-btn-outline" onClick={clearDataset}>
+                <Trash2 size={14} />
+              </button>
+            </>
+          )}
+          {onLogout && (
+            <button className="agri-btn agri-btn-outline" onClick={onLogout} title="Cerrar sesión">
+              <LogOut size={14} />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   // -------------------------------------------------------------------------
   return (
     <div className="agri-shell">
+      {!bootLoading && subHeader}
       {bootLoading ? (
         <div style={{ padding: 60, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
       ) : !meta || rows.length === 0 ? (
@@ -563,8 +613,6 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb }) {
             <div style={{ fontSize: 13, color: "var(--ink-soft)", maxWidth: 380 }}>
               Planilla con Campaña, Campo, Lote, Cultivo, Variedad, Has.Act., Has.Tri., pesos y rindes.
             </div>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
-              onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
             <button className="agri-btn" disabled={parsing} onClick={() => fileInputRef.current?.click()}>
               <Upload size={14} /> {parsing ? "Procesando…" : "Elegir archivo"}
             </button>
@@ -579,25 +627,6 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb }) {
         )
       ) : (
         <>
-          {/* Sub-header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-            <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>
-              {meta.rowCount.toLocaleString("es-AR")} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR",{day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit"})}
-              {aviso && <span style={{ color: "var(--green)", marginLeft: 8 }}>· {aviso}</span>}
-              {error && <span style={{ color: "var(--rust)", marginLeft: 8 }}>· {error}</span>}
-            </div>
-            {isAdmin && (
-              <div style={{ display: "flex", gap: 8 }}>
-                <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
-                  onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
-                <button className="agri-btn" disabled={parsing} onClick={() => fileInputRef.current?.click()}>
-                  <RefreshCw size={13} /> {parsing ? "Procesando…" : "Actualizar datos"}
-                </button>
-                <button className="agri-btn agri-btn-outline" onClick={clearDataset} title="Borrar datos"><Trash2 size={13} /></button>
-              </div>
-            )}
-          </div>
-
           {/* Filtros */}
           <div className="agri-card" style={{ padding: 14, marginBottom: 18 }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
