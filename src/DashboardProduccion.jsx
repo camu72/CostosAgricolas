@@ -173,7 +173,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
   const fileInputRef = useRef(null);
   const [showDetalle, setShowDetalle] = useState(false);
   const [selectedDeposito, setSelectedDeposito] = useState(null);
-  const [gruposAbiertos, setGruposAbiertos] = useState({ planta: true, silo: true, otros: true });
+  const [gruposAbiertos, setGruposAbiertos] = useState({ planta: true, silo: false, otros: false });
   const toggleGrupo = (g) => setGruposAbiertos((prev) => ({ ...prev, [g]: !prev[g] }));
 
   // Filtros
@@ -181,7 +181,6 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
   const [periodo, setPeriodo] = useState("Todos");
   const [cultivo, setCultivo] = useState("Todos");
   const [admin, setAdmin]     = useState("Todos");
-  const [socio, setSocio]     = useState("Todos");
   const [campo, setCampo]     = useState("Todos");
   const [tipoMov, setTipoMov] = useState("Todos");
   const [sort, setSort] = useState({ key: "Fecha", dir: "desc" });
@@ -262,7 +261,6 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
   const periodos    = useMemo(() => Array.from(new Set(rows.map((r) => r["Periodo"]).filter(Boolean))).sort(), [rows]);
   const cultivos    = useMemo(() => Array.from(new Set(rows.map((r) => r["Cultivo"]).filter(Boolean))).sort(), [rows]);
   const admins      = useMemo(() => Array.from(new Set(rows.map((r) => r["Admin"]).filter(Boolean))).sort(), [rows]);
-  const socios      = useMemo(() => Array.from(new Set(rows.map((r) => r["Socio"]).filter(Boolean))).sort(), [rows]);
   const campos      = useMemo(() => {
     const base = admin === "Todos" ? rows : rows.filter((r) => r["Admin"] === admin);
     return Array.from(new Set(base.map((r) => r["Campo"]).filter((c) => c && !c.toUpperCase().includes("DEPOSITO")))).sort();
@@ -275,7 +273,6 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
     if (periodo !== "Todos" && r["Periodo"] !== periodo) return false;
     if (cultivo !== "Todos" && r["Cultivo"] !== cultivo) return false;
     if (admin   !== "Todos" && r["Admin"]   !== admin)   return false;
-    if (socio   !== "Todos" && r["Socio"]   !== socio)   return false;
     if (campo   !== "Todos" && r["Campo"]   !== campo && r["CampoOrigen"] !== campo) return false;
     if (tipoMov !== "Todos" && tipoMovimiento(r) !== tipoMov) return false;
     if (buscarQ) {
@@ -284,9 +281,9 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
       if (!hay) return false;
     }
     return true;
-  }), [rows, periodo, cultivo, admin, socio, campo, tipoMov, buscarQ]);
+  }), [rows, periodo, cultivo, admin, campo, tipoMov, buscarQ]);
 
-  useEffect(() => { setPage(1); }, [periodo, cultivo, admin, socio, campo, tipoMov, buscarQ]);
+  useEffect(() => { setPage(1); }, [periodo, cultivo, admin, campo, tipoMov, buscarQ]);
 
   // ---------- KPIs ----------
   const kpis = useMemo(() => {
@@ -390,8 +387,8 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
     XLSX.writeFile(wb, `produccion_filtrada_${new Date().toISOString().slice(0,10)}.xlsx`);
   }, [sorted]);
 
-  const resetFiltros = () => { setBuscar(""); setPeriodo("Todos"); setCultivo("Todos"); setAdmin("Todos"); setSocio("Todos"); setCampo("Todos"); setTipoMov("Todos"); };
-  const hayFiltros = buscar !== "" || periodo !== "Todos" || cultivo !== "Todos" || admin !== "Todos" || socio !== "Todos" || campo !== "Todos" || tipoMov !== "Todos";
+  const resetFiltros = () => { setBuscar(""); setPeriodo("Todos"); setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setTipoMov("Todos"); };
+  const hayFiltros = buscar !== "" || periodo !== "Todos" || cultivo !== "Todos" || admin !== "Todos" || campo !== "Todos" || tipoMov !== "Todos";
 
   // -------------------------------------------------------------------------
   return (
@@ -465,10 +462,6 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb }) {
               <select className="agri-select" value={admin}    onChange={(e) => setAdmin(e.target.value)}>
                 <option value="Todos">Todas las admins</option>
                 {admins.map((a) => <option key={a} value={a}>{a}</option>)}
-              </select>
-              <select className="agri-select" value={socio}    onChange={(e) => setSocio(e.target.value)}>
-                <option value="Todos">Todos los socios</option>
-                {socios.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
               <select className="agri-select" value={campo}    onChange={(e) => setCampo(e.target.value)}>
                 <option value="Todos">Todos los campos</option>
