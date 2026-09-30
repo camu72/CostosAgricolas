@@ -204,7 +204,10 @@ export function PdfMenu({ onExport, modos = MODOS_PDF }) {
 
   const elegir = async (modo) => {
     setAbierto(false); setGenerando(modo); setErr("");
-    try { await onExport(modo, opciones); }
+    const def = modos.find((m) => m.key === modo);
+    const efectivas = { ...opciones };
+    (def?.opciones || []).forEach((op) => { if (op.requiere && !efectivas[op.requiere]) efectivas[op.key] = false; });
+    try { await onExport(modo, efectivas); }
     catch (e) { console.error(e); setErr("No se pudo generar el PDF"); }
     finally { setGenerando(null); }
   };
@@ -226,13 +229,16 @@ export function PdfMenu({ onExport, modos = MODOS_PDF }) {
               <div style={{ fontSize: 13, fontWeight: 600 }}>{m.label}</div>
               <div style={{ fontSize: 11, color: "var(--ink-soft)" }}>{m.desc}</div>
             </button>
-            {m.opcion && (
-              <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 10px 8px 10px", fontSize: 12, color: "var(--ink)", cursor: "pointer" }}>
-                <input type="checkbox" checked={!!opciones[m.opcion.key]}
-                  onChange={(e) => setOpciones((o) => ({ ...o, [m.opcion.key]: e.target.checked }))} />
-                {m.opcion.label}
-              </label>
-            )}
+            {(m.opciones || (m.opcion ? [m.opcion] : [])).map((op) => {
+              const habilitada = !op.requiere || !!opciones[op.requiere];
+              return (
+                <label key={op.key} style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 10px 6px ${op.requiere ? 28 : 10}px`, fontSize: 12, color: habilitada ? "var(--ink)" : "var(--ink-soft)", opacity: habilitada ? 1 : 0.55, cursor: habilitada ? "pointer" : "default" }}>
+                  <input type="checkbox" disabled={!habilitada} checked={habilitada && !!opciones[op.key]}
+                    onChange={(e) => setOpciones((o) => ({ ...o, [op.key]: e.target.checked }))} />
+                  {op.label}
+                </label>
+              );
+            })}
             </React.Fragment>
           ))}
         </div>

@@ -396,13 +396,16 @@ function costoPorRubroLote(rows) {
 
 
 // ---------------------------------------------------------------------------
-// PDF "Completo por lote": para cada lote, encabezado + indicadores +
+// PDF "Informe completo" con detalle por lote: para cada lote, encabezado + indicadores +
 // composición por rubro (barras) + resumen por rubro completo (sin scroll).
 // ---------------------------------------------------------------------------
 const MODOS_PDF_COSTOS = [
   ...MODOS_PDF.filter((m) => m.key !== "completo"),
-  { key: "porlote", label: "Completo por lote", desc: "Comparativo, precios por ítem y resumen por rubro de cada lote",
-    opcion: { key: "hojaNueva", label: "Cada lote en hoja nueva" } },
+  { key: "completo", label: "Informe completo", desc: "Resumen, comparativo por lote y precios por ítem",
+    opciones: [
+      { key: "detalleLotes", label: "Incluir detalle por lote" },
+      { key: "hojaNueva", label: "Cada lote en hoja nueva", requiere: "detalleLotes" },
+    ] },
 ];
 const COLOR_INSUMOS = [75, 107, 58], COLOR_SERVICIOS = [184, 132, 46];
 
@@ -1025,7 +1028,6 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
   };
 
   // ---------- PDF ----------
-  const LIMITE_MOVS_PDF = 2000;
   const exportarPDF = async (modo, opciones = {}) => {
     const filtros = [];
     if (cultivo !== "Todos") filtros.push(["Cultivo", cultivo]);
@@ -1043,9 +1045,8 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
       itemsBody.push([e.rubro, e.concepto, e.precioProm === null ? "-" : fmtUSD2(e.precioProm), `${fmtNum(e.cant, 1)} ${e.unid || ""}`, fmtUSD2(e.costo), String(e.movimientos)]);
     });
     const tot = loteSorted.reduce((a, e) => ({ ha: a.ha + e.ha, insumos: a.insumos + e.insumos, servicios: a.servicios + e.servicios, total: a.total + e.total }), { ha: 0, insumos: 0, servicios: 0, total: 0 });
-    const movs = sorted.slice(0, LIMITE_MOVS_PDF);
     await generarPDF({
-      modo, modoLabel: modo === "porlote" ? `Completo por lote${opciones.hojaNueva ? " (un lote por hoja)" : ""}` : undefined,
+      modo, modoLabel: modo === "completo" ? `Informe completo${opciones.detalleLotes ? ` con detalle por lote${opciones.hojaNueva ? " (un lote por hoja)" : ""}` : ""}` : undefined,
       titulo: "Costos Agrícolas", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Costos",
       tablas: [
         { titulo: "Comparativo por lote", nota: `${fmtNum(loteSorted.length)} lotes · orden actual de la tabla.`,
@@ -1058,7 +1059,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
         { titulo: "Precios y consumo por ítem", nota: `${fmtNum(itemsSorted.length)} ítems.`,
           head: ["Rubro", "Concepto", "Precio prom.", "Cantidad total", "Costo total", "Movs."],
           align: [null, null, "right", "right", "right", "right"], body: itemsBody },
-        ...(modo === "porlote" ? [{
+        ...(opciones.detalleLotes ? [{
           render: (api) => {
             const porLote = new Map();
             filtered.forEach((r) => {
@@ -1069,16 +1070,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
             const lotes = loteSorted.map((e) => ({ info: e, rows: porLote.get(`${e.campo}|${e.lote}|${e.cultivo}|${e.variedad}`) || [] }));
             return dibujarResumenLotes(api, lotes, !!opciones.hojaNueva);
           },
-        }] : [
-        { titulo: "Detalle de movimientos",
-          nota: sorted.length > LIMITE_MOVS_PDF
-            ? `Se incluyen los primeros ${fmtNum(LIMITE_MOVS_PDF)} de ${fmtNum(sorted.length)} movimientos (orden actual de la tabla). Para el detalle completo, filtrá o usá Exportar a Excel.`
-            : `${fmtNum(sorted.length)} movimientos.`,
-          head: ["Fecha", "Campo", "Lote", "Cultivo", "Labor", "Rubro", "Concepto", "Cant.", "Un.", "USD"],
-          align: [null, null, null, null, null, null, null, "right", null, "right"],
-          body: movs.map((r) => [fmtDate(r["Fecha"]), r["Campo"], r["Lote"], r["Cultivo"], r["Origen"], r["Tipo item"], r["Concepto"],
-            fmtNum(r["Cantidad"], 2), r["Unid."], r["U$S/Total"] === null ? "-" : fmtUSD2(r["U$S/Total"])]) }
-        ]),
+        }] : []),
       ],
     });
   };
