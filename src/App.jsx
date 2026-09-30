@@ -400,7 +400,7 @@ function costoPorRubroLote(rows) {
 // composición por rubro (barras) + resumen por rubro completo (sin scroll).
 // ---------------------------------------------------------------------------
 const MODOS_PDF_COSTOS = [
-  ...MODOS_PDF,
+  ...MODOS_PDF.filter((m) => m.key !== "completo"),
   { key: "porlote", label: "Completo por lote", desc: "Comparativo, precios por ítem y resumen por rubro de cada lote",
     opcion: { key: "hojaNueva", label: "Cada lote en hoja nueva" } },
 ];
@@ -519,7 +519,7 @@ async function dibujarResumenLotes(api, lotes, hojaNueva) {
       startY: yBloque,
       head: [["Rubro / Concepto", "$/U", "Dosis/ha", "Items", "Cant.", "Costo", "Costo/ha"]],
       body: body.map((r) => r.map(limpiar)),
-      margin: { left: TABLE_X, right: PAGE.m, top: TOP + 7, bottom: PAGE.h - BOTTOM },
+      margin: { left: TABLE_X, right: PAGE.m, top: TOP + 11, bottom: PAGE.h - BOTTOM },
       // En las hojas donde sigue la tabla, se repite qué lote es
       didDrawPage: () => {
         if (doc.internal.getCurrentPageInfo().pageNumber === paginaBloque) return;

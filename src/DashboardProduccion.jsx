@@ -9,7 +9,14 @@ import {
   ChevronDown, ChevronUp, Download, ArrowUpDown, Cloud, CloudOff, LogOut,
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
-import { PdfMenu, generarPDF, filaGrupo, filaTotal } from "./pdfExport.jsx";
+import { PdfMenu, generarPDF, filaGrupo, filaTotal, MODOS_PDF } from "./pdfExport.jsx";
+
+// PDF de Producción: Resumen, Pantalla y Totales por depósito (con detalle opcional)
+const MODOS_PDF_PROD = [
+  ...MODOS_PDF.filter((m) => m.key !== "completo"),
+  { key: "depositos", label: "Totales por depósito", desc: "Resumen + stock de cada depósito, con las categorías desplegadas",
+    opcion: { key: "detalle", label: "Incluir el detalle de cada depósito" } },
+];
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -395,8 +402,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
   }, [sorted]);
 
   // ---------- PDF ----------
-  const LIMITE_MOVS_PDF = 2000;
-  const exportarPDF = async (modo) => {
+  const exportarPDF = async (modo, opciones = {}) => {
     const filtros = [];
     if (periodo !== "Todos") filtros.push(["Período", periodo]);
     if (cultivo !== "Todos") filtros.push(["Cultivo", cultivo]);
@@ -405,43 +411,114 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     if (tipoMov !== "Todos") filtros.push(["Tipo", tipoMov === "Cosecha" ? "Solo cosecha" : "Solo movimientos"]);
     if (buscar.trim()) filtros.push(["Búsqueda", `"${buscar.trim()}"`]);
 
-    // Stock por depósito, agrupado igual que en pantalla
+    // Depósitos agrupados igual que en pantalla, todos desplegados
     const grupos = [
       { label: "Plantas de acopio", match: (t) => t === "planta de acopio" },
       { label: "Silo bolsa",        match: (t) => t === "temporal" },
       { label: "Otros depósitos",   match: (t) => t !== "planta de acopio" && t !== "temporal" },
     ];
+    const movsDe = (nombre) => filtered.filter((r) => r["ODT"] === nombre).sort((x, y) => {
+      const fa = x["Fecha"] || "", fb = y["Fecha"] || "";
+      return fa > fb ? -1 : fa < fb ? 1 : 0;
+    });
+    const depositos = [];   // [{ grupo, dep, movs, ent, sal }] en orden de la tabla
     const stockBody = [];
-    let stockTotal = 0;
+    let stockTotal = 0, entTotal = 0, salTotal = 0;
     grupos.forEach(({ label, match }) => {
       const items = stockPorDeposito.filter((e) => match(String(e.tipo).toLowerCase()));
       if (!items.length) return;
-      const tg = items.reduce((a, e) => a + e.stock, 0);
-      stockTotal += tg;
-      stockBody.push(filaGrupo(label, 5, ["", "", fmtNum(tg, 1)]));
-      items.forEach((e) => {
-        const movs = filtered.filter((r) => r["ODT"] === e.nombre);
-        const ent = movs.filter((r) => (r["Neto O."] || 0) > 0).reduce((a, r) => a + r["Neto O."], 0) / 1000;
-        const sal = movs.filter((r) => (r["Neto O."] || 0) < 0).reduce((a, r) => a + Math.abs(r["Neto O."]), 0) / 1000;
-        stockBody.push([e.nombre, e.tipo, fmtNum(ent, 1), fmtNum(sal, 1), fmtNum(e.stock, 1)]);
+      const filasGrupo = items.map((e) => {
+        const movs = movsDe(e.nombre);
+        const ent = movs.filter((r) => (r["Neto O."] || 0) > 0).reduce((acc, r) => acc + r["Neto O."], 0) / 1000;
+        const sal = movs.filter((r) => (r["Neto O."] || 0) < 0).reduce((acc, r) => acc + Math.abs(r["Neto O."]), 0) / 1000;
+        depositos.push({ grupo: label, dep: e, movs, ent, sal });
+        return { e, ent, sal };
       });
+      const tg = items.reduce((acc, e) => acc + e.stock, 0);
+      const eg = filasGrupo.reduce((acc, f) => acc + f.ent, 0), sg = filasGrupo.reduce((acc, f) => acc + f.sal, 0);
+      stockTotal += tg; entTotal += eg; salTotal += sg;
+      stockBody.push(filaGrupo(label, 4, [fmtNum(eg, 1), fmtNum(sg, 1), fmtTn(tg)]));
+      filasGrupo.forEach(({ e, ent, sal }) => stockBody.push([
+        { content: e.nombre, styles: { cellPadding: { top: 1.4, bottom: 1.4, left: 6, right: 1.4 } } },
+        fmtNum(ent, 1), fmtNum(sal, 1), { content: fmtTn(e.stock), styles: { fontStyle: "bold" } },
+      ]));
     });
-    stockBody.push(filaTotal(["Total", "", "", "", fmtNum(stockTotal, 1)]));
+    stockBody.push(filaTotal(["Total", fmtNum(entTotal, 1), fmtNum(salTotal, 1), fmtTn(stockTotal)]));
 
-    const movs = sorted.slice(0, LIMITE_MOVS_PDF);
+    // Detalle de cada depósito (opcional): KPIs + todos los movimientos, sin scroll
+    const detalle = {
+      render: ({ doc, autoTable, pdfTxt, C, PAGE, TOP, BOTTOM, CONTENT_W, getY, setY, nuevaPagina }) => {
+        const VERDE = [75, 107, 58], OXIDO = [161, 70, 47];
+        depositos.forEach(({ grupo, dep, movs, ent, sal }, idx) => {
+          if (idx === 0) {
+            if (BOTTOM - getY() < 60) nuevaPagina();
+            doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(...C.ink);
+            doc.text(pdfTxt(`Detalle de cada depósito (${depositos.length})`), PAGE.m, getY() + 4);
+            setY(getY() + 10);
+          } else if (BOTTOM - getY() < 55) {
+            nuevaPagina();
+          } else {
+            doc.setDrawColor(...C.line); doc.setLineWidth(0.3);
+            doc.line(PAGE.m, getY() - 3, PAGE.w - PAGE.m, getY() - 3);
+          }
+          let y = getY();
+          const pagina = doc.getNumberOfPages();
+          // Encabezado del depósito
+          doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(...VERDE);
+          doc.text(pdfTxt(dep.nombre), PAGE.m, y + 4);
+          doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...C.soft);
+          doc.text(pdfTxt(`${grupo} · ${movs.length} movimientos`), PAGE.m, y + 8.5);
+          y += 11;
+          // Indicadores
+          const kpis = [["Stock actual", fmtTn(dep.stock), VERDE], ["Total ingresado", `${fmtNum(ent, 1)} tn`, C.ink], ["Total egresado", `${fmtNum(sal, 1)} tn`, OXIDO]];
+          const kw = (CONTENT_W - 8) / 3;
+          kpis.forEach(([l, v, col], i) => {
+            const x = PAGE.m + i * (kw + 4);
+            doc.setDrawColor(...C.line); doc.setLineWidth(0.2); doc.setFillColor(...C.raised);
+            doc.roundedRect(x, y, kw, 11, 1.2, 1.2, "FD");
+            doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...C.soft);
+            doc.text(pdfTxt(l), x + 3, y + 4);
+            doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(...col);
+            doc.text(pdfTxt(v), x + 3, y + 9);
+          });
+          y += 14;
+          // Movimientos
+          autoTable(doc, {
+            startY: y,
+            head: [["Fecha", "Cultivo", "Campo / Origen", "Contraparte", "Kg (neto)"]],
+            body: movs.map((r) => {
+              const kg = r["Neto O."] || 0;
+              return [
+                fmtDate(r["Fecha"]), r["Cultivo"], r["CampoOrigen"] || r["Campo"] || "-", r["ODT Contrap."] || "-",
+                { content: `${kg > 0 ? "+" : ""}${fmtNum(kg / 1000, 1)} tn`, styles: { fontStyle: "bold", textColor: kg > 0 ? VERDE : OXIDO } },
+              ].map((c) => (typeof c === "object" ? { ...c, content: pdfTxt(c.content) } : pdfTxt(c)));
+            }),
+            margin: { left: PAGE.m, right: PAGE.m, top: TOP + 11, bottom: PAGE.h - BOTTOM },
+            didDrawPage: () => {
+              if (doc.internal.getCurrentPageInfo().pageNumber === pagina) return;
+              doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(...VERDE);
+              doc.text(pdfTxt(dep.nombre), PAGE.m, TOP + 3);
+              doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...C.soft);
+              doc.text(pdfTxt(`${grupo} · movimientos (continuación)`), PAGE.m, TOP + 7);
+            },
+            styles: { font: "helvetica", fontSize: 8, cellPadding: 1.3, textColor: C.ink, lineColor: C.line, lineWidth: 0.1 },
+            headStyles: { fillColor: C.paper, textColor: C.soft, fontStyle: "bold", fontSize: 7.5, lineWidth: 0 },
+            bodyStyles: { fillColor: [255, 255, 255] },
+            columnStyles: { 0: { cellWidth: 24 }, 1: { cellWidth: 24 }, 2: { cellWidth: 60 }, 4: { halign: "right", cellWidth: 28 } },
+            showHead: "everyPage",
+          });
+          setY(doc.lastAutoTable.finalY + 10);
+        });
+      },
+    };
+
     await generarPDF({
       modo, titulo: "Producción", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Produccion",
+      modoLabel: modo === "depositos" ? `Totales por depósito${opciones.detalle ? " con detalle" : ""}` : undefined,
       tablas: [
         { titulo: "Stock por depósito", nota: "Toneladas. Ingresado y egresado según Neto O. de los movimientos filtrados.",
-          head: ["Depósito", "Tipo", "Ingresado (tn)", "Egresado (tn)", "Stock (tn)"], align: [null, null, "right", "right", "right"], body: stockBody },
-        { titulo: "Detalle de movimientos",
-          nota: sorted.length > LIMITE_MOVS_PDF
-            ? `Se incluyen los primeros ${fmtNum(LIMITE_MOVS_PDF)} de ${fmtNum(sorted.length)} movimientos (orden actual de la tabla). Para el detalle completo, filtrá o usá Exportar a Excel.`
-            : `${fmtNum(sorted.length)} movimientos. Neto O. en kg.`,
-          head: ["Fecha", "Cultivo", "Campo", "Lote", "Tipo dep.", "ODT", "Tipo contrap.", "ODT contrap.", "Neto O. (kg)", "Dominio", "Transporte"],
-          align: [null, null, null, null, null, null, null, null, "right", null, null],
-          body: movs.map((r) => [fmtDate(r["Fecha"]), r["Cultivo"], r["Campo"], r["Lote"], r["TipoDep"], r["ODT"], r["TipoDepContrap."], r["ODT Contrap."],
-            r["Neto O."] === null ? "-" : fmtNum(r["Neto O."], 0), r["Dominio"], r["Transporte"]]) },
+          head: ["Depósito", "Ingresado (tn)", "Egresado (tn)", "Stock"], align: [null, "right", "right", "right"], body: stockBody },
+        ...(opciones.detalle ? [detalle] : []),
       ],
     });
   };
@@ -465,7 +542,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
         </div>
       )}
       <div style={{ display: "flex", gap: 8 }}>
-        {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} />}
+        {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} modos={MODOS_PDF_PROD} />}
         {isAdmin && (<>
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
             onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
