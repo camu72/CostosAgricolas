@@ -206,7 +206,10 @@ export function PdfMenu({ onExport, modos = MODOS_PDF }) {
     setAbierto(false); setGenerando(modo); setErr("");
     const def = modos.find((m) => m.key === modo);
     const efectivas = { ...opciones };
-    (def?.opciones || []).forEach((op) => { if (op.requiere && !efectivas[op.requiere]) efectivas[op.key] = false; });
+    (def?.opciones || []).forEach((op) => {
+      if (op.tipo === "radio" && !efectivas[op.key]) efectivas[op.key] = op.def;
+      if (op.requiere && !efectivas[op.requiere]) efectivas[op.key] = op.tipo === "radio" ? null : false;
+    });
     try { await onExport(modo, efectivas); }
     catch (e) { console.error(e); setErr("No se pudo generar el PDF"); }
     finally { setGenerando(null); }
@@ -231,6 +234,20 @@ export function PdfMenu({ onExport, modos = MODOS_PDF }) {
             </button>
             {(m.opciones || (m.opcion ? [m.opcion] : [])).map((op) => {
               const habilitada = !op.requiere || !!opciones[op.requiere];
+              if (op.tipo === "radio") {
+                const actual = opciones[op.key] || op.def;
+                return (
+                  <div key={op.key} style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px", padding: `0 10px 6px ${op.requiere ? 28 : 10}px`, fontSize: 12, color: habilitada ? "var(--ink)" : "var(--ink-soft)", opacity: habilitada ? 1 : 0.55 }}>
+                    {op.valores.map((v) => (
+                      <label key={v.value} style={{ display: "flex", alignItems: "center", gap: 5, cursor: habilitada ? "pointer" : "default" }}>
+                        <input type="radio" name={`${m.key}-${op.key}`} disabled={!habilitada} checked={actual === v.value}
+                          onChange={() => setOpciones((o) => ({ ...o, [op.key]: v.value }))} />
+                        {v.label}
+                      </label>
+                    ))}
+                  </div>
+                );
+              }
               return (
                 <label key={op.key} style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 10px 6px ${op.requiere ? 28 : 10}px`, fontSize: 12, color: habilitada ? "var(--ink)" : "var(--ink-soft)", opacity: habilitada ? 1 : 0.55, cursor: habilitada ? "pointer" : "default" }}>
                   <input type="checkbox" disabled={!habilitada} checked={habilitada && !!opciones[op.key]}

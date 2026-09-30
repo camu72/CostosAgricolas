@@ -380,6 +380,17 @@ function construirResumenLote(rows, ha) {
     }))
     .sort((a, b) => (TIPODET_ORDER_LOTE[a.tipoDet] ?? 2) - (TIPODET_ORDER_LOTE[b.tipoDet] ?? 2));
 }
+// Movimientos de un lote en el orden de la pantalla: fecha, rubro, concepto
+function ordenarMovimientosLote(rows) {
+  return rows.slice().sort((a, b) => {
+    const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
+    if (fa !== fb) return fa < fb ? -1 : 1;
+    const ra = a["Tipo item"] || "", rb = b["Tipo item"] || "";
+    if (ra !== rb) return ra.localeCompare(rb, "es");
+    const ca = a["Concepto"] || "", cb = b["Concepto"] || "";
+    return ca.localeCompare(cb, "es");
+  });
+}
 // Costo por rubro de un lote (para el gráfico de composición)
 function costoPorRubroLote(rows) {
   const m = new Map();
@@ -404,12 +415,15 @@ const MODOS_PDF_COSTOS = [
   { key: "completo", label: "Informe completo", desc: "Resumen, comparativo por lote y precios por ítem",
     opciones: [
       { key: "detalleLotes", label: "Incluir detalle por lote" },
+      { key: "tipoDetalle", tipo: "radio", requiere: "detalleLotes", def: "resumen",
+        valores: [{ value: "resumen", label: "Resumen por rubro" }, { value: "movimientos", label: "Movimientos" }] },
       { key: "hojaNueva", label: "Cada lote en hoja nueva", requiere: "detalleLotes" },
     ] },
 ];
 const COLOR_INSUMOS = [75, 107, 58], COLOR_SERVICIOS = [184, 132, 46];
 
-async function dibujarResumenLotes(api, lotes, hojaNueva) {
+async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen") {
+  const esMovs = tipoDetalle === "movimientos";
   const { doc, autoTable, pdfTxt, C, PAGE, TOP, BOTTOM, CONTENT_W } = api;
   const CHART_W = 78, GAP = 8, TABLE_X = PAGE.m + CHART_W + GAP;
 
@@ -422,7 +436,7 @@ async function dibujarResumenLotes(api, lotes, hojaNueva) {
     if (idx === 0) {
       if (hojaNueva || BOTTOM - api.getY() < 60) api.nuevaPagina();
       doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(...C.ink);
-      doc.text(pdfTxt(`Resumen por rubro de cada lote (${lotes.length})`), PAGE.m, api.getY() + 4);
+      doc.text(pdfTxt(`Detalle por lote: ${esMovs ? "movimientos" : "resumen por rubro"} (${lotes.length})`), PAGE.m, api.getY() + 4);
       api.setY(api.getY() + 9);
     } else if (hojaNueva) {
       api.nuevaPagina();
@@ -483,60 +497,118 @@ async function dibujarResumenLotes(api, lotes, hojaNueva) {
     });
     const finChart = cy + 6;
 
-    // ---- Resumen por rubro (tabla completa) ----
-    const VERDE_1 = [219, 226, 214], VERDE_2 = [237, 240, 233];
-    const body = [];
-    const num = (v, d) => fmtNum(v, d);
-    resumen.forEach((dg) => {
-      const st = { fontStyle: "bold", fillColor: VERDE_1, textColor: C.ink };
-      body.push([
-        { content: dg.tipoDet, styles: st }, { content: "", styles: st }, { content: "", styles: st },
-        { content: String(dg.items), styles: { ...st, halign: "right" } }, { content: num(dg.cant, 1), styles: { ...st, halign: "right" } },
-        { content: fmtUSD2(dg.costo), styles: { ...st, halign: "right" } }, { content: dg.costoHa === null ? "-" : fmtUSD2(dg.costoHa), styles: { ...st, halign: "right" } },
-      ]);
-      dg.rubros.forEach((rg) => {
-        const sr = { fontStyle: "bold", fillColor: VERDE_2, textColor: C.ink };
-        body.push([
-          { content: rg.rubro, styles: { ...sr, cellPadding: { top: 1.2, bottom: 1.2, left: 4, right: 1.4 } } }, { content: "", styles: sr }, { content: "", styles: sr },
-          { content: String(rg.items), styles: { ...sr, halign: "right" } }, { content: num(rg.cant, 1), styles: { ...sr, halign: "right" } },
-          { content: fmtUSD2(rg.costo), styles: { ...sr, halign: "right" } }, { content: rg.costoHa === null ? "-" : fmtUSD2(rg.costoHa), styles: { ...sr, halign: "right" } },
-        ]);
-        rg.conceptos.forEach((cg) => {
-          body.push([
-            { content: cg.concepto, styles: { textColor: C.soft, cellPadding: { top: 1.2, bottom: 1.2, left: 7, right: 1.4 } } },
-            cg.unitPrice === null ? "-" : fmtUSD2(cg.unitPrice),
-            cg.dosisHa === null ? "-" : `${num(cg.dosisHa, 2)} ${cg.unid || ""}/ha`,
-            String(cg.items), `${num(cg.cant, 1)} ${cg.unid || ""}`, fmtUSD2(cg.costo), cg.costoHa === null ? "-" : fmtUSD2(cg.costoHa),
-          ]);
-        });
-      });
-    });
-    const tot = { fontStyle: "bold", fillColor: C.raised, textColor: C.ink, lineWidth: { top: 0.4 }, lineColor: C.ink };
-    body.push([
-      { content: "Total", styles: tot }, { content: "", styles: tot }, { content: "", styles: tot },
-      { content: String(rows.length), styles: { ...tot, halign: "right" } }, { content: "", styles: tot },
-      { content: fmtUSD2(info.total), styles: { ...tot, halign: "right" } }, { content: fmtUSD2(info.costoHa), styles: { ...tot, halign: "right" } },
-    ]);
+    // ---- Tabla del detalle: Resumen por rubro o Movimientos (completa, sin scroll) ----
     const limpiar = (c) => (c && typeof c === "object" ? { ...c, content: pdfTxt(c.content) } : pdfTxt(c));
-    autoTable(doc, {
+    const continuacion = () => {
+      if (doc.internal.getCurrentPageInfo().pageNumber === paginaBloque) return;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(...C.ink);
+      doc.text(pdfTxt(`${info.campo} · Lote ${info.lote} · ${info.cultivo}`), PAGE.m, TOP + 3);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...C.soft);
+      doc.text(pdfTxt(`${info.variedad ? info.variedad + " · " : ""}${esMovs ? "movimientos" : "resumen por rubro"} (continuación)`), PAGE.m, TOP + 7);
+    };
+    const base = {
       startY: yBloque,
-      head: [["Rubro / Concepto", "$/U", "Dosis/ha", "Items", "Cant.", "Costo", "Costo/ha"]],
-      body: body.map((r) => r.map(limpiar)),
       margin: { left: TABLE_X, right: PAGE.m, top: TOP + 11, bottom: PAGE.h - BOTTOM },
-      // En las hojas donde sigue la tabla, se repite qué lote es
-      didDrawPage: () => {
-        if (doc.internal.getCurrentPageInfo().pageNumber === paginaBloque) return;
-        doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(...C.ink);
-        doc.text(pdfTxt(`${info.campo} · Lote ${info.lote} · ${info.cultivo}`), PAGE.m, TOP + 3);
-        doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...C.soft);
-        doc.text(pdfTxt(`${info.variedad ? info.variedad + " · " : ""}resumen por rubro (continuación)`), PAGE.m, TOP + 7);
-      },
+      didDrawPage: continuacion,
       styles: { font: "helvetica", fontSize: 7.5, cellPadding: 1.2, textColor: C.ink, lineColor: C.line, lineWidth: 0.1 },
       headStyles: { fillColor: C.paper, textColor: C.soft, fontStyle: "bold", fontSize: 7, lineWidth: 0 },
       bodyStyles: { fillColor: [255, 255, 255] },
-      columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right" } },
       showHead: "everyPage",
-    });
+      rowPageBreak: "avoid",   // una fila nunca se parte entre dos hojas
+    };
+    const num = (v, d) => fmtNum(v, d);
+    const tot = { fontStyle: "bold", fillColor: C.raised, textColor: C.ink, lineWidth: { top: 0.4 }, lineColor: C.ink };
+
+    if (esMovs) {
+      // Igual que la pestaña "Movimientos": orden fecha > rubro > concepto; la fecha/labor
+      // y el rubro no se repiten si son iguales a la fila anterior; línea al cambiar de fecha/labor.
+      const movs = ordenarMovimientosLote(rows);
+      const meta = [];
+      const body = movs.map((r, i) => {
+        const prev = movs[i - 1];
+        const mismaFL = !!prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"];
+        const mismoRubro = mismaFL && prev["Tipo item"] === r["Tipo item"];
+        const fecha = fmtDate(r["Fecha"]), labor = r["Origen"] || "";
+        meta.push({ inicio: !mismaFL && i > 0, fecha: mismaFL ? "" : fecha, labor: mismaFL ? "" : labor });
+        const dosis = info.ha > 0 ? (r["Cantidad"] || 0) / info.ha : null;
+        return [
+          mismaFL ? "" : `${fecha}\n${labor}`,
+          { content: mismoRubro ? "" : (r["Tipo item"] || ""), styles: { textColor: C.soft, fontSize: 6.8 } },
+          { content: r["Concepto"] || "", styles: { textColor: C.soft, fontSize: 6.8 } },
+          `${num(r["Cantidad"], 1)} ${r["Unid."] || ""}`,
+          { content: dosis === null ? "-" : `${num(dosis, 2)} ${r["Unid."] || ""}/ha`, styles: { textColor: C.soft } },
+          { content: r["U$S/Total"] === null ? "-" : fmtUSD2(r["U$S/Total"]), styles: { fontStyle: "bold" } },
+        ];
+      });
+      body.push([
+        { content: "Total", styles: tot }, { content: `${fmtNum(movs.length)} movimientos`, styles: tot }, { content: "", styles: tot },
+        { content: "", styles: tot }, { content: "", styles: tot }, { content: fmtUSD2(info.total), styles: { ...tot, halign: "right" } },
+      ]);
+      autoTable(doc, {
+        ...base,
+        head: [["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"]],
+        body: body.map((r) => r.map(limpiar)),
+        columnStyles: { 0: { cellWidth: 30 }, 1: { cellWidth: 30 }, 3: { halign: "right", cellWidth: 24 }, 4: { halign: "right", cellWidth: 26 }, 5: { halign: "right", cellWidth: 24 } },
+        // Fecha en tinta y labor más chica y gris, dentro de la misma celda
+        willDrawCell: (d) => {
+          if (d.section === "body" && d.column.index === 0 && meta[d.row.index]) d.cell.text = [];
+        },
+        didDrawCell: (d) => {
+          if (d.section !== "body") return;
+          const m = meta[d.row.index];
+          if (!m) return;
+          if (m.inicio) {
+            doc.setDrawColor(...C.ink); doc.setLineWidth(0.3);
+            doc.line(d.cell.x, d.cell.y, d.cell.x + d.cell.width, d.cell.y);
+          }
+          if (d.column.index === 0 && m.fecha) {
+            const px = d.cell.x + 1.2;
+            doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...C.ink);
+            doc.text(pdfTxt(m.fecha), px, d.cell.y + 3.6);
+            doc.setFontSize(6.2); doc.setTextColor(...C.soft);
+            doc.text(doc.splitTextToSize(pdfTxt(m.labor), d.cell.width - 2.4), px, d.cell.y + 6.6);
+          }
+        },
+      });
+    } else {
+      const VERDE_1 = [219, 226, 214], VERDE_2 = [237, 240, 233];
+      const body = [];
+      resumen.forEach((dg) => {
+        const st = { fontStyle: "bold", fillColor: VERDE_1, textColor: C.ink };
+        body.push([
+          { content: dg.tipoDet, styles: st }, { content: "", styles: st }, { content: "", styles: st },
+          { content: String(dg.items), styles: { ...st, halign: "right" } }, { content: num(dg.cant, 1), styles: { ...st, halign: "right" } },
+          { content: fmtUSD2(dg.costo), styles: { ...st, halign: "right" } }, { content: dg.costoHa === null ? "-" : fmtUSD2(dg.costoHa), styles: { ...st, halign: "right" } },
+        ]);
+        dg.rubros.forEach((rg) => {
+          const sr = { fontStyle: "bold", fillColor: VERDE_2, textColor: C.ink };
+          body.push([
+            { content: rg.rubro, styles: { ...sr, cellPadding: { top: 1.2, bottom: 1.2, left: 4, right: 1.4 } } }, { content: "", styles: sr }, { content: "", styles: sr },
+            { content: String(rg.items), styles: { ...sr, halign: "right" } }, { content: num(rg.cant, 1), styles: { ...sr, halign: "right" } },
+            { content: fmtUSD2(rg.costo), styles: { ...sr, halign: "right" } }, { content: rg.costoHa === null ? "-" : fmtUSD2(rg.costoHa), styles: { ...sr, halign: "right" } },
+          ]);
+          rg.conceptos.forEach((cg) => {
+            body.push([
+              { content: cg.concepto, styles: { textColor: C.soft, cellPadding: { top: 1.2, bottom: 1.2, left: 7, right: 1.4 } } },
+              cg.unitPrice === null ? "-" : fmtUSD2(cg.unitPrice),
+              cg.dosisHa === null ? "-" : `${num(cg.dosisHa, 2)} ${cg.unid || ""}/ha`,
+              String(cg.items), `${num(cg.cant, 1)} ${cg.unid || ""}`, fmtUSD2(cg.costo), cg.costoHa === null ? "-" : fmtUSD2(cg.costoHa),
+            ]);
+          });
+        });
+      });
+      body.push([
+        { content: "Total", styles: tot }, { content: "", styles: tot }, { content: "", styles: tot },
+        { content: String(rows.length), styles: { ...tot, halign: "right" } }, { content: "", styles: tot },
+        { content: fmtUSD2(info.total), styles: { ...tot, halign: "right" } }, { content: fmtUSD2(info.costoHa), styles: { ...tot, halign: "right" } },
+      ]);
+      autoTable(doc, {
+        ...base,
+        head: [["Rubro / Concepto", "$/U", "Dosis/ha", "Items", "Cant.", "Costo", "Costo/ha"]],
+        body: body.map((r) => r.map(limpiar)),
+        columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right" } },
+      });
+    }
     const finTabla = doc.lastAutoTable.finalY;
     const mismaPagina = doc.getNumberOfPages() === paginaBloque;
     api.setY((mismaPagina ? Math.max(finChart, finTabla) : finTabla) + 10);
@@ -955,15 +1027,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
   const selectedLoteInfo = useMemo(() => loteAgg.find((e) => `${e.campo}|${e.lote}|${e.cultivo}|${e.variedad}` === selectedLoteKey) || null, [loteAgg, selectedLoteKey]);
   const selectedLoteRows = useMemo(() => {
     if (!selectedLoteKey) return [];
-    return filtered.filter((r) => `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}` === selectedLoteKey)
-      .slice().sort((a, b) => {
-        const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
-        if (fa !== fb) return fa < fb ? -1 : 1;
-        const ra = a["Tipo item"] || "", rb = b["Tipo item"] || "";
-        if (ra !== rb) return ra.localeCompare(rb, "es");
-        const ca = a["Concepto"] || "", cb = b["Concepto"] || "";
-        return ca.localeCompare(cb, "es");
-      });
+    return ordenarMovimientosLote(filtered.filter((r) => `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}` === selectedLoteKey));
   }, [filtered, selectedLoteKey]);
   const selectedLoteByItem = useMemo(() => costoPorRubroLote(selectedLoteRows), [selectedLoteRows]);
 
@@ -1046,7 +1110,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
     });
     const tot = loteSorted.reduce((a, e) => ({ ha: a.ha + e.ha, insumos: a.insumos + e.insumos, servicios: a.servicios + e.servicios, total: a.total + e.total }), { ha: 0, insumos: 0, servicios: 0, total: 0 });
     await generarPDF({
-      modo, modoLabel: modo === "completo" ? `Informe completo${opciones.detalleLotes ? ` con detalle por lote${opciones.hojaNueva ? " (un lote por hoja)" : ""}` : ""}` : undefined,
+      modo, modoLabel: modo === "completo" ? `Informe completo${opciones.detalleLotes ? ` con detalle por lote: ${opciones.tipoDetalle === "movimientos" ? "movimientos" : "resumen por rubro"}${opciones.hojaNueva ? " (un lote por hoja)" : ""}` : ""}` : undefined,
       titulo: "Costos Agrícolas", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Costos",
       tablas: [
         { titulo: "Comparativo por lote", nota: `${fmtNum(loteSorted.length)} lotes · orden actual de la tabla.`,
@@ -1068,7 +1132,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
               porLote.get(k).push(r);
             });
             const lotes = loteSorted.map((e) => ({ info: e, rows: porLote.get(`${e.campo}|${e.lote}|${e.cultivo}|${e.variedad}`) || [] }));
-            return dibujarResumenLotes(api, lotes, !!opciones.hojaNueva);
+            return dibujarResumenLotes(api, lotes, !!opciones.hojaNueva, opciones.tipoDetalle || "resumen");
           },
         }] : []),
       ],
