@@ -51,7 +51,7 @@ export const filaTotal = (celdas) => celdas.map((c) => ({ content: c, styles: { 
  * @param {Array}    o.tablas        para modo completo: [{ titulo, nota?, head:[...], body:[[...]], align:[...] }]
  * @param {string}   o.archivo       nombre base del archivo
  */
-export async function generarPDF({ modo, titulo, cliente, filtros, root, tablas = [], archivo }) {
+export async function generarPDF({ modo, modoLabel, titulo, cliente, filtros, root, tablas = [], archivo }) {
   const [{ jsPDF }, { autoTable }, { default: html2canvas }] = await Promise.all([
     import("jspdf"), import("jspdf-autotable"), import("html2canvas"),
   ]);
@@ -61,7 +61,7 @@ export async function generarPDF({ modo, titulo, cliente, filtros, root, tablas 
   // ---------- Encabezado de la primera página ----------
   const ahora = new Date();
   const fechaTxt = ahora.toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
-  const modoTxt = MODOS_PDF.find((m) => m.key === modo)?.label || "";
+  const modoTxt = modoLabel || MODOS_PDF.find((m) => m.key === modo)?.label || "";
   doc.setTextColor(...C.ink); doc.setFont("helvetica", "bold"); doc.setFontSize(16);
   doc.text(pdfTxt(`${titulo} - ${cliente}`), PAGE.m, 16);
   doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(...C.soft);
@@ -129,9 +129,17 @@ export async function generarPDF({ modo, titulo, cliente, filtros, root, tablas 
     }
   }
 
-  // ---------- Tablas completas (modo completo) ----------
-  if (modo === "completo") {
+  // ---------- Tablas completas (todo modo que no sea Resumen ni Pantalla) ----------
+  if (modo !== "resumen" && modo !== "pantalla") {
     for (const t of tablas) {
+      // Sección dibujada a medida por el dashboard
+      if (typeof t.render === "function") {
+        await t.render({
+          doc, autoTable, pdfTxt, C, PAGE, TOP, BOTTOM, CONTENT_W,
+          getY: () => y, setY: (v) => { y = v; }, nuevaPagina,
+        });
+        continue;
+      }
       if (BOTTOM - y < 30) nuevaPagina();
       doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(...C.ink);
       doc.text(pdfTxt(t.titulo), PAGE.m, y + 4);
@@ -180,10 +188,11 @@ export async function generarPDF({ modo, titulo, cliente, filtros, root, tablas 
 // ---------------------------------------------------------------------------
 // Botón "PDF" con menú de 3 opciones
 // ---------------------------------------------------------------------------
-export function PdfMenu({ onExport }) {
+export function PdfMenu({ onExport, modos = MODOS_PDF }) {
   const [abierto, setAbierto] = useState(false);
   const [generando, setGenerando] = useState(null);
   const [err, setErr] = useState("");
+  const [opciones, setOpciones] = useState({});
   const ref = useRef(null);
 
   useEffect(() => {
@@ -195,7 +204,7 @@ export function PdfMenu({ onExport }) {
 
   const elegir = async (modo) => {
     setAbierto(false); setGenerando(modo); setErr("");
-    try { await onExport(modo); }
+    try { await onExport(modo, opciones); }
     catch (e) { console.error(e); setErr("No se pudo generar el PDF"); }
     finally { setGenerando(null); }
   };
@@ -207,15 +216,24 @@ export function PdfMenu({ onExport }) {
         <FileDown size={14} /> {generando ? "Generando…" : "PDF"} <ChevronDown size={12} />
       </button>
       {abierto && (
-        <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 50, width: 250, background: "var(--paper-raised)", border: "1px solid var(--line)", borderRadius: 8, boxShadow: "0 6px 18px rgba(43,33,24,0.14)", padding: 4 }}>
-          {MODOS_PDF.map((m) => (
-            <button key={m.key} onClick={() => elegir(m.key)}
+        <div style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 50, width: 270, background: "var(--paper-raised)", border: "1px solid var(--line)", borderRadius: 8, boxShadow: "0 6px 18px rgba(43,33,24,0.14)", padding: 4 }}>
+          {modos.map((m) => (
+            <React.Fragment key={m.key}>
+            <button onClick={() => elegir(m.key)}
               style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderRadius: 6, padding: "8px 10px", cursor: "pointer", font: "inherit", color: "var(--ink)" }}
               onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(107,94,79,0.08)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>{m.label}</div>
               <div style={{ fontSize: 11, color: "var(--ink-soft)" }}>{m.desc}</div>
             </button>
+            {m.opcion && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 10px 8px 10px", fontSize: 12, color: "var(--ink)", cursor: "pointer" }}>
+                <input type="checkbox" checked={!!opciones[m.opcion.key]}
+                  onChange={(e) => setOpciones((o) => ({ ...o, [m.opcion.key]: e.target.checked }))} />
+                {m.opcion.label}
+              </label>
+            )}
+            </React.Fragment>
           ))}
         </div>
       )}
