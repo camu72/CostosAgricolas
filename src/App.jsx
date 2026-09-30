@@ -645,8 +645,9 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
   const [showDataQuality, setShowDataQuality] = useState(false);
   // Precios y consumo por ítem (Rubro + Concepto), respetando los filtros activos
   // Agrupa en dos secciones: Insumos primero, Servicios después.
-  const [itemSort, setItemSort] = useState({ key: "costo", dir: "desc" });
-  const toggleItemSort = (key) => setItemSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
+  // Por defecto: dentro de Insumos / Servicios, por rubro y luego por concepto (A-Z)
+  const [itemSort, setItemSort] = useState({ key: "rubro", dir: "asc" });
+  const toggleItemSort = (key) => setItemSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "rubro" || key === "concepto" ? "asc" : "desc" }));
   const TIPODET_ORDER_ITEMS = { "INSUMOS": 0, "SERVICIOS": 1 };
   const itemsSummary = useMemo(() => {
     const m = new Map();
@@ -680,7 +681,8 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
       if (typeof va === "string") { va = va.toLowerCase(); vb = String(vb).toLowerCase(); }
       if (va < vb) return dir === "asc" ? -1 : 1;
       if (va > vb) return dir === "asc" ? 1 : -1;
-      return 0;
+      // Desempate: rubro y después concepto, alfabético
+      return a.rubro.localeCompare(b.rubro, "es", { numeric: true }) || a.concepto.localeCompare(b.concepto, "es", { numeric: true });
     });
     return arr;
   }, [itemsSummary, itemSort]);
