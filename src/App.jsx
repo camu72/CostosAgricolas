@@ -380,11 +380,14 @@ function construirResumenLote(rows, ha) {
     }))
     .sort((a, b) => (TIPODET_ORDER_LOTE[a.tipoDet] ?? 2) - (TIPODET_ORDER_LOTE[b.tipoDet] ?? 2));
 }
-// Movimientos de un lote en el orden de la pantalla: fecha, rubro, concepto
+// Movimientos de un lote en el orden de la pantalla: fecha, OTA, rubro, concepto.
+// Cada grupo es fecha + labor + OTA, y queda siempre en un bloque continuo.
 function ordenarMovimientosLote(rows) {
   return rows.slice().sort((a, b) => {
     const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
     if (fa !== fb) return fa < fb ? -1 : 1;
+    const oa = a["OTA"] || "", ob = b["OTA"] || "";
+    if (oa !== ob) return oa.localeCompare(ob, "es", { numeric: true });
     const ra = a["Tipo item"] || "", rb = b["Tipo item"] || "";
     if (ra !== rb) return ra.localeCompare(rb, "es");
     const ca = a["Concepto"] || "", cb = b["Concepto"] || "";
@@ -526,13 +529,13 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
       const meta = [];
       const body = movs.map((r, i) => {
         const prev = movs[i - 1];
-        const mismaFL = !!prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"];
+        const mismaFL = !!prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"] && prev["OTA"] === r["OTA"];
         const mismoRubro = mismaFL && prev["Tipo item"] === r["Tipo item"];
-        const fecha = fmtDate(r["Fecha"]), labor = r["Origen"] || "";
-        meta.push({ inicio: !mismaFL && i > 0, fecha: mismaFL ? "" : fecha, labor: mismaFL ? "" : labor });
+        const fecha = fmtDate(r["Fecha"]), labor = r["Origen"] || "", ota = r["OTA"] || "";
+        meta.push({ inicio: !mismaFL && i > 0, fecha: mismaFL ? "" : fecha, labor: mismaFL ? "" : labor, ota: mismaFL ? "" : ota });
         const dosis = info.ha > 0 ? (r["Cantidad"] || 0) / info.ha : null;
         return [
-          mismaFL ? "" : `${fecha}\n${labor}`,
+          mismaFL ? "" : fecha,
           { content: mismoRubro ? "" : (r["Tipo item"] || ""), styles: { textColor: C.soft, fontSize: 6.8 } },
           { content: r["Concepto"] || "", styles: { textColor: C.soft, fontSize: 6.8 } },
           `${num(r["Cantidad"], 1)} ${r["Unid."] || ""}`,
@@ -548,8 +551,20 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
         ...base,
         head: [["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"]],
         body: body.map((r) => r.map(limpiar)),
-        columnStyles: { 0: { cellWidth: 30 }, 1: { cellWidth: 30 }, 3: { halign: "right", cellWidth: 24 }, 4: { halign: "right", cellWidth: 26 }, 5: { halign: "right", cellWidth: 24 } },
-        // Fecha en tinta y labor más chica y gris, dentro de la misma celda
+        columnStyles: { 0: { cellWidth: 38 }, 1: { cellWidth: 28 }, 3: { halign: "right", cellWidth: 24 }, 4: { halign: "right", cellWidth: 26 }, 5: { halign: "right", cellWidth: 24 } },
+        // Alto justo para fecha + labor + OTA (se dibujan a mano, con tamaños distintos)
+        didParseCell: (d) => {
+          if (d.section !== "body" || d.column.index !== 0) return;
+          const m = meta[d.row.index];
+          if (!m || !m.fecha) return;
+          const w = 38 - 2.4;
+          doc.setFont("helvetica", "normal"); doc.setFontSize(6.2);
+          const nl = doc.splitTextToSize(pdfTxt(m.labor), w).length;
+          doc.setFont("helvetica", "bold");
+          const no = m.ota ? doc.splitTextToSize(pdfTxt(m.ota), w).length : 0;
+          d.cell.styles.minCellHeight = 4.4 + (nl + no) * 2.6;
+        },
+        // Fecha en tinta, labor más chica y gris, OTA en dorado, dentro de la misma celda
         willDrawCell: (d) => {
           if (d.section === "body" && d.column.index === 0 && meta[d.row.index]) d.cell.text = [];
         },
@@ -566,7 +581,12 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
             doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...C.ink);
             doc.text(pdfTxt(m.fecha), px, d.cell.y + 3.6);
             doc.setFontSize(6.2); doc.setTextColor(...C.soft);
-            doc.text(doc.splitTextToSize(pdfTxt(m.labor), d.cell.width - 2.4), px, d.cell.y + 6.6);
+            const lab = doc.splitTextToSize(pdfTxt(m.labor), d.cell.width - 2.4);
+            doc.text(lab, px, d.cell.y + 6.6);
+            if (m.ota) {
+              doc.setFont("helvetica", "bold"); doc.setTextColor(184, 132, 46);
+              doc.text(doc.splitTextToSize(pdfTxt(m.ota), d.cell.width - 2.4), px, d.cell.y + 6.6 + lab.length * 2.6);
+            }
           }
         },
       });
@@ -1493,7 +1513,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
                         <tbody>
                           {selectedLoteRows.map((r, i) => {
                             const prev = selectedLoteRows[i - 1];
-                            const sameFechaLabor = prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"];
+                            const sameFechaLabor = prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"] && prev["OTA"] === r["OTA"];
                             const sameRubro = sameFechaLabor && prev["Tipo item"] === r["Tipo item"];
                             const tdSm = { padding: "4px 7px", fontSize: 11 };
                             const tdLabor = { padding: "4px 7px", fontSize: 9, color: "var(--ink-soft)", fontWeight: 400 };
@@ -1506,6 +1526,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
                                     <>
                                       <div>{fmtDate(r["Fecha"])}</div>
                                       <div style={{ fontSize: 9, color: "var(--ink-soft)", fontWeight: 400 }}>{r["Origen"]}</div>
+                                      {r["OTA"] && <div style={{ fontSize: 9, color: "var(--gold)", fontWeight: 600, marginTop: 1 }}>{r["OTA"]}</div>}
                                     </>
                                   )}
                                 </td>
