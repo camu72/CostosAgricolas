@@ -266,7 +266,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     }
   }, [slug, cloudDb]);
 
-  // Al subir un Excel se reemplazan sólo las campañas que contiene; las demás se conservan.
+  // Al subir un Excel se reemplaza TODO: el dashboard queda sólo con lo que trae el archivo (igual que Costos y Producción).
   const handleFile = useCallback(async (file) => {
     if (!file) return;
     setParsing(true); setError(""); setAviso("");
@@ -278,15 +278,11 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
       if (!json.length) throw new Error("La hoja no tiene datos.");
       const faltan = ["Campaña","Campo","Lote","Cultivo","Variedad","Has.Act.","Has.Tri.","Neto (O)","Desc (D)"].filter((c) => !(c in json[0]));
       if (faltan.length) throw new Error(`Faltan columnas: ${faltan.join(", ")}`);
-      const nuevas = json.map(normalizeRowCult).filter((r) => r["Campo"] && r["Cultivo"]);
-      const campNuevas = new Set(nuevas.map((r) => r["Campaña"]));
-      const conservadas = rows.filter((r) => !campNuevas.has(r["Campaña"]));
-      const all = [...conservadas, ...nuevas];
+      const all = json.map(normalizeRowCult).filter((r) => r["Campo"] && r["Cultivo"]);
       setRows(all);
       setMeta({ fileName: file.name, updatedAt: new Date().toISOString(), rowCount: all.length });
-      const lista = Array.from(campNuevas).sort();
+      const lista = Array.from(new Set(all.map((r) => r["Campaña"]).filter(Boolean))).sort();
       setCampania(lista[lista.length - 1] || "");
-      setAviso(`Actualizada${lista.length > 1 ? "s" : ""}: ${lista.join(", ")}${conservadas.length ? " · se conservaron las demás campañas" : ""}`);
       try {
         await persist(all, file.name);
       } catch (e) {
@@ -298,7 +294,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     } finally {
       setParsing(false);
     }
-  }, [persist, rows]);
+  }, [persist]);
 
   const clearDataset = async () => {
     if (!window.confirm("¿Borrar todos los datos de Cultivos de este cliente?")) return;
