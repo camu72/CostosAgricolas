@@ -380,6 +380,12 @@ function construirResumenLote(rows, ha) {
     }))
     .sort((a, b) => (TIPODET_ORDER_LOTE[a.tipoDet] ?? 2) - (TIPODET_ORDER_LOTE[b.tipoDet] ?? 2));
 }
+// OTA abreviada: "OTA N° 020-001008 C25/26 - SA" -> "OTA 020-001008" (tipo + número)
+const otaCorta = (ota) => {
+  const m = String(ota || "").match(/^(\S+)\s+N[°º]?\s*(\d+-\d+)/);
+  return m ? `${m[1]} ${m[2]}` : String(ota || "");
+};
+
 // Movimientos de un lote en el orden de la pantalla: fecha, OTA, rubro, concepto.
 // Cada grupo es fecha + labor + OTA, y queda siempre en un bloque continuo.
 function ordenarMovimientosLote(rows) {
@@ -531,7 +537,7 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
         const prev = movs[i - 1];
         const mismaFL = !!prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"] && prev["OTA"] === r["OTA"];
         const mismoRubro = mismaFL && prev["Tipo item"] === r["Tipo item"];
-        const fecha = fmtDate(r["Fecha"]), labor = r["Origen"] || "", ota = r["OTA"] || "";
+        const fecha = fmtDate(r["Fecha"]), labor = r["Origen"] || "", ota = otaCorta(r["OTA"]);
         meta.push({ inicio: !mismaFL && i > 0, fecha: mismaFL ? "" : fecha, labor: mismaFL ? "" : labor, ota: mismaFL ? "" : ota });
         const dosis = info.ha > 0 ? (r["Cantidad"] || 0) / info.ha : null;
         return [
@@ -560,9 +566,7 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
           const w = 38 - 2.4;
           doc.setFont("helvetica", "normal"); doc.setFontSize(6.2);
           const nl = doc.splitTextToSize(pdfTxt(m.labor), w).length;
-          doc.setFont("helvetica", "bold");
-          const no = m.ota ? doc.splitTextToSize(pdfTxt(m.ota), w).length : 0;
-          d.cell.styles.minCellHeight = 4.4 + (nl + no) * 2.6;
+          d.cell.styles.minCellHeight = 4.4 + nl * 2.6;
         },
         // Fecha en tinta, labor más chica y gris, OTA en dorado, dentro de la misma celda
         willDrawCell: (d) => {
@@ -580,13 +584,13 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
             const px = d.cell.x + 1.2;
             doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...C.ink);
             doc.text(pdfTxt(m.fecha), px, d.cell.y + 3.6);
-            doc.setFontSize(6.2); doc.setTextColor(...C.soft);
-            const lab = doc.splitTextToSize(pdfTxt(m.labor), d.cell.width - 2.4);
-            doc.text(lab, px, d.cell.y + 6.6);
-            if (m.ota) {
-              doc.setFont("helvetica", "bold"); doc.setTextColor(184, 132, 46);
-              doc.text(doc.splitTextToSize(pdfTxt(m.ota), d.cell.width - 2.4), px, d.cell.y + 6.6 + lab.length * 2.6);
+            if (m.ota) {   // OTA abreviada en la misma línea que la fecha
+              const fx = px + doc.getTextWidth(pdfTxt(m.fecha)) + 2;
+              doc.setFontSize(6.2); doc.setTextColor(184, 132, 46);
+              doc.text(pdfTxt(m.ota), fx, d.cell.y + 3.6);
             }
+            doc.setFontSize(6.2); doc.setTextColor(...C.soft);
+            doc.text(doc.splitTextToSize(pdfTxt(m.labor), d.cell.width - 2.4), px, d.cell.y + 6.6);
           }
         },
       });
@@ -1506,7 +1510,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
                         <thead>
                           <tr>
                             {["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"].map((h) => (
-                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px" }}>{h}</th>
+                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px", width: h === "Fecha / Labor" ? 175 : undefined }}>{h}</th>
                             ))}
                           </tr>
                         </thead>
@@ -1524,16 +1528,18 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
                                 <td className="agri-td" style={{ ...tdSm, color: sameFechaLabor ? "var(--line)" : "var(--ink)" }}>
                                   {sameFechaLabor ? "″" : (
                                     <>
-                                      <div>{fmtDate(r["Fecha"])}</div>
-                                      <div style={{ fontSize: 9, color: "var(--ink-soft)", fontWeight: 400 }}>{r["Origen"]}</div>
-                                      {r["OTA"] && <div style={{ fontSize: 9, color: "var(--gold)", fontWeight: 600, marginTop: 1 }}>{r["OTA"]}</div>}
+                                      <div style={{ display: "flex", alignItems: "baseline", gap: 6, whiteSpace: "nowrap" }}>
+                                        <span>{fmtDate(r["Fecha"])}</span>
+                                        {r["OTA"] && <span style={{ fontSize: 9, color: "var(--gold)", fontWeight: 400 }} title={r["OTA"]}>{otaCorta(r["OTA"])}</span>}
+                                      </div>
+                                      <div style={{ fontSize: 9, color: "var(--ink-soft)", fontWeight: 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 165 }} title={r["Origen"]}>{r["Origen"]}</div>
                                     </>
                                   )}
                                 </td>
                                 <td className="agri-td" style={{ ...tdLabor, color: sameRubro ? "var(--line)" : "var(--ink-soft)" }}>{sameRubro ? "″" : r["Tipo item"]}</td>
                                 <td className="agri-td" style={tdLabor}>{r["Concepto"]}</td>
-                                <td className="agri-td" style={{ ...tdSm, textAlign: "right" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
-                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", color: "var(--ink-soft)" }}>{dosis === null ? "—" : `${fmtNum(dosis, 2)} ${r["Unid."]}/ha`}</td>
+                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
+                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", color: "var(--ink-soft)", whiteSpace: "nowrap" }}>{dosis === null ? "—" : `${fmtNum(dosis, 2)} ${r["Unid."]}/ha`}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right", fontWeight: 600 }}>{r["U$S/Total"] === null ? "—" : fmtUSD2(r["U$S/Total"])}</td>
                               </tr>
                             );
