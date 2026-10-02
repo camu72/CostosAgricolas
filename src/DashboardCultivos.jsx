@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal } from "./pdfExport.jsx";
+import { leerFilasArchivo, validarColumnas, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -271,20 +272,16 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     if (!file) return;
     setParsing(true); setError(""); setAviso("");
     try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const json = XLSX.utils.sheet_to_json(ws, { defval: null, raw: true });
-      if (!json.length) throw new Error("La hoja no tiene datos.");
-      const faltan = ["Campaña","Campo","Lote","Cultivo","Variedad","Has.Act.","Has.Tri.","Neto (O)","Desc (D)"].filter((c) => !(c in json[0]));
-      if (faltan.length) throw new Error(`Faltan columnas: ${faltan.join(", ")}`);
+      // Excel (primera hoja) o JSON con el mismo formato
+      const { filas: json, fileName } = await leerFilasArchivo(file);
+      validarColumnas(json, ["Campaña", "Campo", "Lote", "Cultivo", "Variedad", "Has.Act.", "Has.Tri.", "Neto (O)", "Desc (D)"]);
       const all = json.map(normalizeRowCult).filter((r) => r["Campo"] && r["Cultivo"]);
       setRows(all);
-      setMeta({ fileName: file.name, updatedAt: new Date().toISOString(), rowCount: all.length });
+      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: all.length });
       const lista = Array.from(new Set(all.map((r) => r["Campaña"]).filter(Boolean))).sort();
       setCampania(lista[lista.length - 1] || "");
       try {
-        await persist(all, file.name);
+        await persist(all, fileName);
       } catch (e) {
         setAviso("");
         setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`);
@@ -608,7 +605,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
       <div style={{ display: "flex", gap: 8 }}>
         {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} />}
         {isAdmin && (<>
-          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+          <input ref={fileInputRef} type="file" accept={ACCEPT_ARCHIVOS} style={{ display: "none" }}
             onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
           {meta && (
             <>
@@ -645,7 +642,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
             onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files?.[0]); }}
           >
             <FileSpreadsheet size={40} color="var(--ink-soft)" />
-            <div style={{ fontSize: 16, fontWeight: 700 }}>{parsing ? "Leyendo…" : "Arrastrá el Excel de Cultivos"}</div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{parsing ? "Leyendo…" : "Arrastrá el Excel o JSON de Cultivos"}</div>
             <div style={{ fontSize: 13, color: "var(--ink-soft)", maxWidth: 380 }}>
               Planilla con Campaña, Campo, Lote, Cultivo, Variedad, Has.Act., Has.Tri., pesos y rindes.
             </div>

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal, MODOS_PDF } from "./pdfExport.jsx";
+import { leerFilasArchivo, validarColumnas, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 
 // PDF de Producción: Resumen, Pantalla y Totales por depósito (con detalle opcional)
 const MODOS_PDF_PROD = [
@@ -244,17 +245,15 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     if (!file) return;
     setParsing(true); setError(""); setAviso("");
     try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const json = XLSX.utils.sheet_to_json(ws, { defval: null, raw: true });
-      if (!json.length) throw new Error("La hoja no tiene datos.");
+      // Excel (primera hoja) o JSON con el mismo formato
+      const { filas: json, fileName } = await leerFilasArchivo(file);
+      validarColumnas(json, ["Periodo", "Cultivo", "Fecha", "Campo", "Admin", "TipoDep", "ODT", "TipoDepContrap.", "ODT Contrap.", "Neto O."]);
       const normalized = json.map(normalizeRowProd).filter((r) => r["Cultivo"] || r["Campo"]);
       setRows(normalized);
-      setMeta({ fileName: file.name, updatedAt: new Date().toISOString(), rowCount: normalized.length });
+      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length });
       setPage(1);
       try {
-        await persist(normalized, file.name);
+        await persist(normalized, fileName);
       } catch (e) {
         setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`);
       }
@@ -544,7 +543,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
       <div style={{ display: "flex", gap: 8 }}>
         {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} modos={MODOS_PDF_PROD} />}
         {isAdmin && (<>
-          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+          <input ref={fileInputRef} type="file" accept={ACCEPT_ARCHIVOS} style={{ display: "none" }}
             onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ""; }} />
           {meta && (
             <>
@@ -581,7 +580,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
             onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files?.[0]); }}
           >
             <FileSpreadsheet size={40} color="var(--ink-soft)" />
-            <div style={{ fontSize: 16, fontWeight: 700 }}>{parsing ? "Leyendo…" : "Arrastrá el Excel de Producción"}</div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{parsing ? "Leyendo…" : "Arrastrá el Excel o JSON de Producción"}</div>
             <div style={{ fontSize: 13, color: "var(--ink-soft)", maxWidth: 380 }}>
               Planilla de movimientos con columnas ODT, TipoDep, Neto O., etc.
             </div>

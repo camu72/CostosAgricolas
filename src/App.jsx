@@ -7,6 +7,7 @@ import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./fireba
 import DashboardProduccion from "./DashboardProduccion.jsx";
 import DashboardCultivos from "./DashboardCultivos.jsx";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal, MODOS_PDF } from "./pdfExport.jsx";
+import { leerFilasArchivo, validarColumnas, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, Legend, LabelList,
@@ -741,25 +742,15 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
     setParsing(true);
     setError("");
     try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
-      let sheetName = wb.SheetNames[0];
-      let best = 0;
-      wb.SheetNames.forEach((n) => {
-        const ws = wb.Sheets[n];
-        const range = ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]) : null;
-        const rc = range ? range.e.r - range.s.r : 0;
-        if (rc > best) { best = rc; sheetName = n; }
-      });
-      const ws = wb.Sheets[sheetName];
-      const json = XLSX.utils.sheet_to_json(ws, { defval: null, raw: true });
-      if (!json.length) throw new Error("La hoja no tiene filas de datos.");
+      // Excel (hoja con más filas) o JSON con el mismo formato
+      const { filas: json, fileName } = await leerFilasArchivo(file, { hoja: "mayor" });
+      validarColumnas(json, ["Campo", "Lote", "Cultivo", "Sup.Cultivo", "Fecha", "Tipo Det.", "Tipo item", "Concepto", "Cantidad", ["U$S/Total", "Total"]]);
       const normalized = json.map(normalizeRow).filter((r) => r["Campo"] || r["Cultivo"] || r["Concepto"]);
       setRows(normalized);
-      const newMeta = { fileName: file.name, updatedAt: new Date().toISOString(), rowCount: normalized.length };
+      const newMeta = { fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length };
       setMeta(newMeta);
       setPage(1);
-      await persist(normalized, file.name);
+      await persist(normalized, fileName);
 
       // Si los filtros activos dejan el dashboard vacío con los datos nuevos, los limpiamos
       const q = search.trim().toLowerCase();
@@ -1184,7 +1175,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
         <div style={{ display: "flex", gap: 8 }}>
           {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} modos={MODOS_PDF_COSTOS} />}
           {isAdmin && (<>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+            <input ref={fileInputRef} type="file" accept={ACCEPT_ARCHIVOS} style={{ display: "none" }}
               onChange={(e) => handleFile(e.target.files?.[0])} />
             {meta && (
               <>
@@ -1215,12 +1206,12 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
           >
             <FileSpreadsheet size={40} color="var(--ink-soft)" />
             <div className="agri-serif" style={{ fontSize: 16, fontWeight: 700 }}>
-              {parsing ? "Leyendo el archivo…" : "Arrastrá tu Excel acá"}
+              {parsing ? "Leyendo el archivo…" : "Arrastrá tu Excel o JSON acá"}
             </div>
             <div style={{ fontSize: 13, color: "var(--ink-soft)", maxWidth: 360 }}>
-              Formato .xlsx con las columnas de campo, lote, cultivo, insumos y costos. Los datos se guardan en este dispositivo hasta que subas una versión nueva.
+              Excel (.xlsx) o JSON con las columnas de campo, lote, cultivo, insumos y costos.
             </div>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+            <input ref={fileInputRef} type="file" accept={ACCEPT_ARCHIVOS} style={{ display: "none" }}
               onChange={(e) => handleFile(e.target.files?.[0])} />
             <button className="agri-btn" disabled={parsing} onClick={() => fileInputRef.current?.click()}>
               <Upload size={14} /> {parsing ? "Procesando…" : "Elegir archivo"}
