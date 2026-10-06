@@ -387,6 +387,38 @@ const otaCorta = (ota) => {
   return m ? `${m[1]} ${m[2]}` : String(ota || "");
 };
 
+// Hectáreas de la labor: columna COL_HAS_LABOR ("Cant.Afect" = has afectadas a esta línea
+// de cultivo; alternativa "Cant.Orig." = has de toda la orden de labor), en la unidad del
+// servicio ("U.Serv.": Has → ha, Hs → hs). Si falta, se usan las ha del cultivo.
+const COL_HAS_LABOR = "Cant.Afect";
+const unidadLabor = (r) => {
+  const u = String(r["U.Serv."] || "").trim().toLowerCase();
+  return !u || u.startsWith("ha") ? "ha" : u;
+};
+const dosisLabor = (r, haCultivo) => {
+  const hl = r[COL_HAS_LABOR];
+  const base = hl > 0 ? hl : haCultivo;
+  return base > 0 ? { valor: (r["Cantidad"] || 0) / base, unidad: hl > 0 ? unidadLabor(r) : "ha" } : null;
+};
+// Hectáreas de cada grupo fecha + labor + OTA (índice de la primera fila → { has, unidad }).
+// Si el lote tiene varias líneas de cultivo (p. ej. una resiembra con la misma variedad),
+// se suman las hectáreas de cada línea (identificada por su Sup.Cultivo).
+function hasPorGrupoMovs(movs) {
+  const res = {};
+  let ini = 0;
+  for (let i = 1; i <= movs.length; i++) {
+    const a = movs[i - 1], b = movs[i];
+    const corte = !b || b["Fecha"] !== a["Fecha"] || b["Origen"] !== a["Origen"] || b["OTA"] !== a["OTA"];
+    if (!corte) continue;
+    const porLinea = new Map();
+    movs.slice(ini, i).forEach((r) => { if (r[COL_HAS_LABOR] > 0 && !porLinea.has(r["Sup.Cultivo"])) porLinea.set(r["Sup.Cultivo"], r[COL_HAS_LABOR]); });
+    const has = Array.from(porLinea.values()).reduce((x, y) => x + y, 0);
+    res[ini] = has > 0 ? { has, unidad: unidadLabor(movs[ini]) } : null;
+    ini = i;
+  }
+  return res;
+}
+
 // Movimientos de un lote en el orden de la pantalla: fecha, OTA, rubro, concepto.
 // Cada grupo es fecha + labor + OTA, y queda siempre en un bloque continuo.
 function ordenarMovimientosLote(rows) {
@@ -533,20 +565,23 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
       // Igual que la pestaña "Movimientos": orden fecha > rubro > concepto; la fecha/labor
       // y el rubro no se repiten si son iguales a la fila anterior; línea al cambiar de fecha/labor.
       const movs = ordenarMovimientosLote(rows);
+      const hasGrupo = hasPorGrupoMovs(movs);
       const meta = [];
       const body = movs.map((r, i) => {
         const prev = movs[i - 1];
         const mismaFL = !!prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"] && prev["OTA"] === r["OTA"];
         const mismoRubro = mismaFL && prev["Tipo item"] === r["Tipo item"];
         const fecha = fmtDate(r["Fecha"]), labor = r["Origen"] || "", ota = otaCorta(r["OTA"]);
-        meta.push({ inicio: !mismaFL && i > 0, fecha: mismaFL ? "" : fecha, labor: mismaFL ? "" : labor, ota: mismaFL ? "" : ota });
-        const dosis = info.ha > 0 ? (r["Cantidad"] || 0) / info.ha : null;
+        const hg = hasGrupo[i];
+        const laborTxt = labor + (hg ? ` · ${fmtNum(hg.has, 2)} ${hg.unidad}` : "");
+        meta.push({ inicio: !mismaFL && i > 0, fecha: mismaFL ? "" : fecha, labor: mismaFL ? "" : laborTxt, ota: mismaFL ? "" : ota });
+        const dosis = dosisLabor(r, info.ha);
         return [
           mismaFL ? "" : fecha,
           { content: mismoRubro ? "" : (r["Tipo item"] || ""), styles: { textColor: C.soft, fontSize: 6.8 } },
           { content: r["Concepto"] || "", styles: { textColor: C.soft, fontSize: 6.8 } },
           `${num(r["Cantidad"], 1)} ${r["Unid."] || ""}`,
-          { content: dosis === null ? "-" : `${num(dosis, 2)} ${r["Unid."] || ""}/ha`, styles: { textColor: C.soft } },
+          { content: dosis === null ? "-" : `${num(dosis.valor, 4)} ${r["Unid."] || ""}/${dosis.unidad}`, styles: { textColor: C.soft } },
           { content: r["U$S/Total"] === null ? "-" : fmtUSD2(r["U$S/Total"]), styles: { fontStyle: "bold" } },
         ];
       });
@@ -558,13 +593,13 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
         ...base,
         head: [["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"]],
         body: body.map((r) => r.map(limpiar)),
-        columnStyles: { 0: { cellWidth: 38 }, 1: { cellWidth: 28 }, 3: { halign: "right", cellWidth: 24 }, 4: { halign: "right", cellWidth: 26 }, 5: { halign: "right", cellWidth: 24 } },
+        columnStyles: { 0: { cellWidth: 46 }, 1: { cellWidth: 26 }, 3: { halign: "right", cellWidth: 24 }, 4: { halign: "right", cellWidth: 26 }, 5: { halign: "right", cellWidth: 24 } },
         // Alto justo para fecha + labor + OTA (se dibujan a mano, con tamaños distintos)
         didParseCell: (d) => {
           if (d.section !== "body" || d.column.index !== 0) return;
           const m = meta[d.row.index];
           if (!m || !m.fecha) return;
-          const w = 38 - 2.4;
+          const w = 46 - 2.4;
           doc.setFont("helvetica", "normal"); doc.setFontSize(6.2);
           const nl = doc.splitTextToSize(pdfTxt(m.labor), w).length;
           d.cell.styles.minCellHeight = 4.4 + nl * 2.6;
@@ -1501,19 +1536,19 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
                         <thead>
                           <tr>
                             {["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"].map((h) => (
-                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px", width: h === "Fecha / Labor" ? 175 : undefined }}>{h}</th>
+                              <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px", width: h === "Fecha / Labor" ? 210 : undefined }}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedLoteRows.map((r, i) => {
+                          {(() => { const hasGrupo = hasPorGrupoMovs(selectedLoteRows); return selectedLoteRows.map((r, i) => {
                             const prev = selectedLoteRows[i - 1];
                             const sameFechaLabor = prev && prev["Fecha"] === r["Fecha"] && prev["Origen"] === r["Origen"] && prev["OTA"] === r["OTA"];
                             const sameRubro = sameFechaLabor && prev["Tipo item"] === r["Tipo item"];
                             const tdSm = { padding: "4px 7px", fontSize: 11 };
                             const tdLabor = { padding: "4px 7px", fontSize: 9, color: "var(--ink-soft)", fontWeight: 400 };
-                            const ha = selectedLoteInfo.ha;
-                            const dosis = ha > 0 ? r["Cantidad"] / ha : null;
+                            const dosis = dosisLabor(r, selectedLoteInfo.ha);
+                            const hg = hasGrupo[i];
                             return (
                               <tr key={i} className="agri-tr" style={{ borderTop: !sameFechaLabor && i > 0 ? "1px solid var(--ink)" : undefined }}>
                                 <td className="agri-td" style={{ ...tdSm, color: sameFechaLabor ? "var(--line)" : "var(--ink)" }}>
@@ -1523,18 +1558,21 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
                                         <span>{fmtDate(r["Fecha"])}</span>
                                         {r["OTA"] && <span style={{ fontSize: 9, color: "var(--gold)", fontWeight: 400 }} title={r["OTA"]}>{otaCorta(r["OTA"])}</span>}
                                       </div>
-                                      <div style={{ fontSize: 9, color: "var(--ink-soft)", fontWeight: 400, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 165 }} title={r["Origen"]}>{r["Origen"]}</div>
+                                      <div style={{ display: "flex", gap: 4, fontSize: 9, color: "var(--ink-soft)", fontWeight: 400, whiteSpace: "nowrap", maxWidth: 200 }}>
+                                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }} title={r["Origen"]}>{r["Origen"]}</span>
+                                        {hg && <span style={{ flexShrink: 0, color: "var(--ink)", fontWeight: 600 }}>· {fmtNum(hg.has, 2)} {hg.unidad}</span>}
+                                      </div>
                                     </>
                                   )}
                                 </td>
                                 <td className="agri-td" style={{ ...tdLabor, color: sameRubro ? "var(--line)" : "var(--ink-soft)" }}>{sameRubro ? "″" : r["Tipo item"]}</td>
                                 <td className="agri-td" style={tdLabor}>{r["Concepto"]}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
-                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", color: "var(--ink-soft)", whiteSpace: "nowrap" }}>{dosis === null ? "—" : `${fmtNum(dosis, 2)} ${r["Unid."]}/ha`}</td>
+                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", color: "var(--ink-soft)", whiteSpace: "nowrap" }}>{dosis === null ? "—" : `${fmtNum(dosis.valor, 4)} ${r["Unid."]}/${dosis.unidad}`}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right", fontWeight: 600 }}>{r["U$S/Total"] === null ? "—" : fmtUSD2(r["U$S/Total"])}</td>
                               </tr>
                             );
-                          })}
+                          }); })()}
                         </tbody>
                       </table>
                     </div>
