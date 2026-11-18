@@ -10,9 +10,22 @@ import * as XLSX from "xlsx";
 //      (el mismo formato que la App guarda en Firebase; fileName/updatedAt opcionales)
 //   2) [ { "A": ..., "B": ... }, ... ]   (lista de objetos)
 // En el formato 1, "" en una celda se toma como vacío (null).
+// El formato 1 puede traer además "encabezado": { "titulo": "...", "detalle": "..." } (opcional),
+// un texto que Gorrión manda para mostrar junto al nombre del perfil (p.ej. la campaña).
 // ---------------------------------------------------------------------------
 
 export const ACCEPT_ARCHIVOS = ".xlsx,.xls,.xlsm,.json";
+
+/** Encabezado opcional de un dashboard: { titulo, detalle } con texto, o null si no hay nada. */
+export function leerEncabezado(e) {
+  if (!e || typeof e !== "object" || Array.isArray(e)) return null;
+  const limpio = (v) => (typeof v === "string" || typeof v === "number" ? String(v).trim() : "");
+  const o = {};
+  const titulo = limpio(e.titulo), detalle = limpio(e.detalle);
+  if (titulo) o.titulo = titulo;
+  if (detalle) o.detalle = detalle;
+  return Object.keys(o).length ? o : null;
+}
 
 const esJSON = (file) => /\.json$/i.test(file.name) || file.type === "application/json";
 
@@ -20,7 +33,7 @@ const esJSON = (file) => /\.json$/i.test(file.name) || file.type === "applicatio
  * @param {File} file
  * @param {object} [opts]
  * @param {"primera"|"mayor"} [opts.hoja="primera"]  En Excel: primera hoja o la de más filas
- * @returns {Promise<{ filas: object[], fileName: string, origen: "excel"|"json" }>}
+ * @returns {Promise<{ filas: object[], fileName: string, origen: "excel"|"json", encabezado: object|null }>}
  */
 export async function leerFilasArchivo(file, { hoja = "primera" } = {}) {
   if (esJSON(file)) return leerJSON(file);
@@ -38,7 +51,7 @@ export async function leerFilasArchivo(file, { hoja = "primera" } = {}) {
     });
   }
   const filas = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: null, raw: true });
-  return { filas, fileName: file.name, origen: "excel" };
+  return { filas, fileName: file.name, origen: "excel", encabezado: null };
 }
 
 async function leerJSON(file) {
@@ -52,7 +65,7 @@ async function leerJSON(file) {
   if (Array.isArray(data)) {
     if (data.some((o) => !o || typeof o !== "object" || Array.isArray(o)))
       throw new Error("la lista debe contener objetos { columna: valor }");
-    return { filas: data, fileName: file.name, origen: "json" };
+    return { filas: data, fileName: file.name, origen: "json", encabezado: null };
   }
 
   // Formato 1: { columns, rows }
@@ -69,7 +82,7 @@ async function leerJSON(file) {
     cols.forEach((c, j) => { const v = arr[j]; o[c] = v === "" || v === undefined ? null : v; });
     return o;
   });
-  return { filas, fileName: typeof data.fileName === "string" && data.fileName ? data.fileName : file.name, origen: "json" };
+  return { filas, fileName: typeof data.fileName === "string" && data.fileName ? data.fileName : file.name, origen: "json", encabezado: leerEncabezado(data.encabezado) };
 }
 
 /**
