@@ -7,7 +7,7 @@ import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./fireba
 import DashboardProduccion from "./DashboardProduccion.jsx";
 import DashboardCultivos from "./DashboardCultivos.jsx";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal, MODOS_PDF } from "./pdfExport.jsx";
-import { leerFilasArchivo, validarColumnas, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
+import { leerFilasArchivo, validarColumnas, leerEncabezado, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, Legend, LabelList,
@@ -302,6 +302,19 @@ function ClienteDashboard({ slug, isAdmin }) {
     window.dispatchEvent(new Event("popstate"));
   };
 
+  // Encabezado opcional que manda Gorrión con cada dashboard (p.ej. la campaña): se lee sólo
+  // clientes/<slug>/<nodo>/encabezado del dashboard activo, sin bajar los datos.
+  const NODO_DASH = { costos: "dataset", produccion: "produccion", cultivos: "cultivos" };
+  const [encabezado, setEncabezado] = useState(null);
+  useEffect(() => {
+    setEncabezado(null);
+    if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
+    const nodo = NODO_DASH[dashKey] || "dataset";
+    const unsub = onValue(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/${slug}/${nodo}/encabezado`),
+      (snap) => setEncabezado(leerEncabezado(snap.val())), () => setEncabezado(null));
+    return unsub;
+  }, [slug, dashKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [clienteNombre, setClienteNombre] = useState("");
   useEffect(() => {
     if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
@@ -328,6 +341,12 @@ function ClienteDashboard({ slug, isAdmin }) {
           ))}
         </div>
       </div>
+      {encabezado && (
+        <div style={{ textAlign: "right", maxWidth: 560, marginLeft: "auto" }}>
+          {encabezado.titulo && <div className="agri-serif" style={{ fontSize: 20, fontWeight: 600, lineHeight: 1.2 }}>{encabezado.titulo}</div>}
+          {encabezado.detalle && <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 4, whiteSpace: "pre-line" }}>{encabezado.detalle}</div>}
+        </div>
+      )}
     </div>
   );
 
@@ -716,7 +735,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
           const payload = JSON.parse(res.value);
           const objRows = rowsFromPayload(payload);
           setRows(objRows);
-          setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length });
+          setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length, encabezado: leerEncabezado(payload.encabezado) });
         }
       } catch (e) {
         // no hay datos guardados todavía en este dispositivo, es normal
@@ -733,7 +752,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
             if (payload && payload.rows && payload.columns) {
               const objRows = rowsFromPayload(payload);
               setRows(objRows);
-              setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length });
+              setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length, encabezado: leerEncabezado(payload.encabezado) });
             }
             setSyncStatus("cloud");
             setBootLoading(false);
@@ -750,10 +769,10 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
     return () => { if (cloudUnsub) cloudUnsub(); };
   }, []);
 
-  const persist = useCallback(async (normalizedRows, fileName) => {
+  const persist = useCallback(async (normalizedRows, fileName, encabezado) => {
     const columns = COLS;
     const dataRows = normalizedRows.map((r) => columns.map((c) => encodeCell(c, r[c])));
-    const payload = { columns, rows: dataRows, fileName, updatedAt: new Date().toISOString() };
+    const payload = { columns, rows: dataRows, fileName, updatedAt: new Date().toISOString(), ...(encabezado ? { encabezado } : {}) };
 
     try {
       await window.storage.set(storageKey, JSON.stringify(payload), false);
@@ -778,14 +797,14 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
     setError("");
     try {
       // Excel (hoja con más filas) o JSON con el mismo formato
-      const { filas: json, fileName } = await leerFilasArchivo(file, { hoja: "mayor" });
+      const { filas: json, fileName, encabezado } = await leerFilasArchivo(file, { hoja: "mayor" });
       validarColumnas(json, ["Campo", "Lote", "Cultivo", "Sup.Cultivo", "Fecha", "Tipo Det.", "Tipo item", "Concepto", "Cantidad", ["U$S/Total", "Total"]]);
       const normalized = json.map(normalizeRow).filter((r) => r["Campo"] || r["Cultivo"] || r["Concepto"]);
       setRows(normalized);
-      const newMeta = { fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length };
+      const newMeta = { fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length, encabezado };
       setMeta(newMeta);
       setPage(1);
-      await persist(normalized, fileName);
+      await persist(normalized, fileName, encabezado);
 
       // Si los filtros activos dejan el dashboard vacío con los datos nuevos, los limpiamos
       const q = search.trim().toLowerCase();
@@ -1161,7 +1180,7 @@ function DashboardCostos({ slug, isAdmin, clienteNombre }) {
     const tot = loteSorted.reduce((a, e) => ({ ha: a.ha + e.ha, insumos: a.insumos + e.insumos, servicios: a.servicios + e.servicios, total: a.total + e.total }), { ha: 0, insumos: 0, servicios: 0, total: 0 });
     await generarPDF({
       modo, modoLabel: modo === "completo" ? `Informe completo${opciones.detalleLotes ? ` con detalle por lote: ${opciones.tipoDetalle === "movimientos" ? "movimientos" : "resumen por rubro"}${opciones.hojaNueva ? " (un lote por hoja)" : ""}` : ""}` : undefined,
-      titulo: "Costos Agrícolas", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Costos",
+      titulo: "Costos Agrícolas", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Costos", encabezado: meta?.encabezado,
       tablas: [
         { titulo: "Comparativo por lote", nota: `${fmtNum(loteSorted.length)} lotes · orden actual de la tabla.`,
           head: ["Campo", "Lote", "Cultivo", "Variedad", "Ha", "Insumos", "Servicios", "Total", "USD/ha"],

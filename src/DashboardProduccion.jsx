@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal, MODOS_PDF } from "./pdfExport.jsx";
-import { leerFilasArchivo, validarColumnas, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
+import { leerFilasArchivo, validarColumnas, leerEncabezado, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 
 // PDF de Producción: Resumen, Pantalla y Totales por depósito (con detalle opcional)
 const MODOS_PDF_PROD = [
@@ -206,7 +206,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
         if (raw) {
           const payload = JSON.parse(raw);
           setRows(rowsFromPayload(payload));
-          setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: rowsFromPayload(payload).length });
+          setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: rowsFromPayload(payload).length, encabezado: leerEncabezado(payload.encabezado) });
         }
       } catch (e) {}
 
@@ -216,7 +216,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
           if (payload && payload.rows && payload.columns) {
             const objRows = rowsFromPayload(payload);
             setRows(objRows);
-            setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length });
+            setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length, encabezado: leerEncabezado(payload.encabezado) });
           }
           setSyncStatus("cloud");
           setBootLoading(false);
@@ -228,11 +228,12 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     return () => { if (unsub) unsub(); };
   }, [slug]);
 
-  const persist = useCallback(async (normalized, fileName) => {
+  const persist = useCallback(async (normalized, fileName, encabezado) => {
     const payload = {
       columns: COLS_PROD,
       rows: normalized.map((r) => COLS_PROD.map((c) => encodeCell(c, r[c]))),
       fileName, updatedAt: new Date().toISOString(),
+      ...(encabezado ? { encabezado } : {}),
     };
     try { localStorage.setItem(storageKey, JSON.stringify(payload)); } catch (e) {}
     if (cloudDb) {
@@ -246,14 +247,14 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     setParsing(true); setError(""); setAviso("");
     try {
       // Excel (primera hoja) o JSON con el mismo formato
-      const { filas: json, fileName } = await leerFilasArchivo(file);
+      const { filas: json, fileName, encabezado } = await leerFilasArchivo(file);
       validarColumnas(json, ["Periodo", "Cultivo", "Fecha", "Campo", "Admin", "TipoDep", "ODT", "TipoDepContrap.", "ODT Contrap.", "Neto O."]);
       const normalized = json.map(normalizeRowProd).filter((r) => r["Cultivo"] || r["Campo"]);
       setRows(normalized);
-      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length });
+      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length, encabezado });
       setPage(1);
       try {
-        await persist(normalized, fileName);
+        await persist(normalized, fileName, encabezado);
       } catch (e) {
         setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`);
       }
@@ -512,7 +513,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     };
 
     await generarPDF({
-      modo, titulo: "Producción", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Produccion",
+      modo, titulo: "Producción", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Produccion", encabezado: meta?.encabezado,
       modoLabel: modo === "depositos" ? `Totales por depósito${opciones.detalle ? " con detalle" : ""}` : undefined,
       tablas: [
         { titulo: "Stock por depósito", nota: "Toneladas. Ingresado y egresado según Neto O. de los movimientos filtrados.",

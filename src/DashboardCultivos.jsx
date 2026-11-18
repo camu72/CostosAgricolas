@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal } from "./pdfExport.jsx";
-import { leerFilasArchivo, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
+import { leerFilasArchivo, leerEncabezado, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 
 // ---------------------------------------------------------------------------
 // Cultivos: datos generados por la pantalla "Dashboards > Cultivos" de Gorrión.
@@ -274,7 +274,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     const aplicar = (payload) => {
       const r = filasDesdePayload(payload);
       setRows(r);
-      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: r.length });
+      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: r.length, encabezado: leerEncabezado(payload.encabezado) });
     };
     try {
       const raw = localStorage.getItem(storageKey);
@@ -294,11 +294,12 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     return () => { if (unsub) unsub(); };
   }, [slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const persist = useCallback(async (all, fileName) => {
+  const persist = useCallback(async (all, fileName, encabezado) => {
     const payload = {
       columns: COLS,
       rows: all.map((r) => COLS.map((c) => r[c] ?? "")),
       fileName, updatedAt: new Date().toISOString(),
+      ...(encabezado ? { encabezado } : {}),
     };
     try { localStorage.setItem(storageKey, JSON.stringify(payload)); } catch (e) {}
     if (cloudDb) {
@@ -312,13 +313,13 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     if (!file) return;
     setParsing(true); setError("");
     try {
-      const { filas, fileName } = await leerFilasArchivo(file, { hoja: "mayor" });
+      const { filas, fileName, encabezado } = await leerFilasArchivo(file, { hoja: "mayor" });
       validar(filas);
       const all = normalizar(filas);
       setRows(all);
-      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: all.length });
+      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: all.length, encabezado });
       setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setVariedad("Todos"); setEstado("Todos"); setBuscar("");
-      try { await persist(all, fileName); }
+      try { await persist(all, fileName, encabezado); }
       catch (e) { setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`); }
     } catch (e) {
       setError("No pude leer el archivo: " + e.message);
@@ -626,7 +627,7 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     const tCosecha = { titulo: "Cosecha por lote", nota: "(R) con superficie superpuesta (resiembra). Rinde = Neto (O) / has trilladas, sólo donde hay superficie trillada · Rinde con. = Desc (D) / has activas. Pesos en toneladas.", head: headC, align: [null, null, null, null, "right", null, "right", "right", "right", "right", "right", "right"], body: bodyC };
     await generarPDF({
       modo, titulo: `Cultivos · ${vista === "siembra" ? "Siembra" : "Cosecha"}`, cliente: clienteNombre || slug, filtros,
-      root: pdfRootRef.current, archivo: "Cultivos",
+      root: pdfRootRef.current, archivo: "Cultivos", encabezado: meta?.encabezado,
       tablas: vista === "siembra" ? [tSiembra, tCosecha] : [tCosecha, tSiembra],
     });
   };

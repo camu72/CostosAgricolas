@@ -50,8 +50,9 @@ export const filaTotal = (celdas) => celdas.map((c) => ({ content: c, styles: { 
  * @param {Element}  o.root          contenedor del dashboard (donde están los data-pdf)
  * @param {Array}    o.tablas        para modo completo: [{ titulo, nota?, head:[...], body:[[...]], align:[...] }]
  * @param {string}   o.archivo       nombre base del archivo
+ * @param {object}   [o.encabezado]  { titulo, detalle } que manda Gorrión (opcional)
  */
-export async function generarPDF({ modo, modoLabel, titulo, cliente, filtros, root, tablas = [], archivo }) {
+export async function generarPDF({ modo, modoLabel, titulo, cliente, filtros, root, tablas = [], archivo, encabezado = null }) {
   const [{ jsPDF }, { autoTable }, { default: html2canvas }] = await Promise.all([
     import("jspdf"), import("jspdf-autotable"), import("html2canvas"),
   ]);
@@ -68,9 +69,18 @@ export async function generarPDF({ modo, modoLabel, titulo, cliente, filtros, ro
   doc.text(pdfTxt(`Generado el ${fechaTxt} · ${modoTxt}`), PAGE.m, 21.5);
   const filtrosTxt = filtros.length ? "Filtros: " + filtros.map(([k, v]) => `${k}: ${v}`).join("  ·  ") : "Filtros: ninguno (todos los datos)";
   const lineas = doc.splitTextToSize(pdfTxt(filtrosTxt), CONTENT_W);
+  let yF = 27;
+  const encTxt = encabezado ? [encabezado.titulo, encabezado.detalle].filter(Boolean).join("  ·  ") : "";
+  if (encTxt) {                                     // texto del encabezado que manda Gorrión
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(...C.green);
+    const le = doc.splitTextToSize(pdfTxt(encTxt), CONTENT_W);
+    doc.text(le, PAGE.m, yF);
+    yF += le.length * 4.5 + 0.5;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+  }
   doc.setTextColor(...C.ink);
-  doc.text(lineas, PAGE.m, 27);
-  let y = 27 + lineas.length * 4 + 1;
+  doc.text(lineas, PAGE.m, yF);
+  let y = yF + lineas.length * 4 + 1;
   doc.setDrawColor(...C.ink); doc.setLineWidth(0.4); doc.line(PAGE.m, y, PAGE.w - PAGE.m, y);
   y += 4;
 
