@@ -18,9 +18,9 @@ import {
 // ---------------------------------------------------------------------------
 // Costos: datos generados por la pantalla "Dashboards > Costos" de Gorrión.
 // Sigue el modelo de Cultivos (20/11/2026). Reemplaza al dashboard de Costos anterior: mismo nodo
-// (clientes/<slug>/dataset), sin compatibilidad con los datos viejos.
+// (antes clientes/<slug>/dataset; ahora clientes/<slug>/costos, como publica Gorrión), sin compatibilidad con los datos viejos.
 // Una fila por ítem de una OTA aplicado a una línea de cultivo, de UNA campaña (sin selector).
-// Llega por tres vías y siempre se guarda en clientes/<slug>/dataset:
+// Llega por tres vías y siempre se guarda en clientes/<slug>/costos:
 //   - publicación directa desde Gorrión (PUT del JSON),
 //   - "Actualizar datos" con el JSON que genera Gorrión,
 //   - "Actualizar datos" con el Excel que exporta Gorrión.
@@ -31,7 +31,7 @@ import {
 //   - Insumos y servicios llegan con precio; una fila sin Total se marca "sin precio".
 //   - Hectáreas de la labor: Cant.Afect (las de esa línea); Cant.Orig. = las de toda la OTA.
 // ---------------------------------------------------------------------------
-export const NODO_COSTOS = "dataset";
+export const NODO_COSTOS = "costos";
 const COLS = [
   "Admin", "Campaña", "Campo", "Lote", "Sup.Lote", "Cultivo", "Variedad",
   "Sup.Cultivo", "Fecha", "OTA", "Origen", "Cant.Orig.", "U.Serv.",

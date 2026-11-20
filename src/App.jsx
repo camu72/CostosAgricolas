@@ -170,12 +170,12 @@ function ClienteDashboard({ slug, isAdmin }) {
 
   // Encabezado opcional que manda Gorrión con cada dashboard (p.ej. la campaña): se lee sólo
   // clientes/<slug>/<nodo>/encabezado del dashboard activo, sin bajar los datos.
-  const NODO_DASH = { costos: "dataset", produccion: "produccion", cultivos: "cultivos" };
+  const NODO_DASH = { costos: "costos", produccion: "produccion", cultivos: "cultivos" };
   const [encabezado, setEncabezado] = useState(null);
   useEffect(() => {
     setEncabezado(null);
     if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
-    const nodo = NODO_DASH[dashKey] || "dataset";
+    const nodo = NODO_DASH[dashKey] || "costos";
     const unsub = onValue(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/${slug}/${nodo}/encabezado`),
       (snap) => setEncabezado(leerEncabezado(snap.val())), () => setEncabezado(null));
     return unsub;
@@ -401,9 +401,9 @@ function AdminPanel() {
     if (newSlug !== slug) {
       // Migración: leer datos del viejo, escribir en el nuevo, borrar el viejo
       const oldClient = (clients || []).find((c) => c.slug === slug);
-      const snap = await get(ref(cloudDb, `clientes/${slug}/dataset`));
+      const snap = await get(ref(cloudDb, `clientes/${slug}/costos`));
       if (snap.exists()) {
-        dbSet(ref(cloudDb, `clientes/${newSlug}/dataset`), snap.val());
+        dbSet(ref(cloudDb, `clientes/${newSlug}/costos`), snap.val());
       }
       dbSet(ref(cloudDb, `clientes/index/${newSlug}`), {
         nombre: trimmed,
