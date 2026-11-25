@@ -142,19 +142,19 @@ function ClienteDashboard({ slug, isAdmin }) {
   const baseUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
 
   const DASHBOARDS = [
+    { key: "cultivos",   label: "Cultivos" },
     { key: "costos",     label: "Costos Agrícolas" },
     { key: "produccion", label: "Producción" },
-    { key: "cultivos",   label: "Cultivos" },
   ];
 
   const [dashKey, setDashKey] = useState(() => {
-    if (typeof window === "undefined") return "costos";
-    return new URLSearchParams(window.location.search).get("dashboard") || "costos";
+    if (typeof window === "undefined") return "cultivos";
+    return new URLSearchParams(window.location.search).get("dashboard") || "cultivos";
   });
 
   useEffect(() => {
     const onPop = () => {
-      const k = new URLSearchParams(window.location.search).get("dashboard") || "costos";
+      const k = new URLSearchParams(window.location.search).get("dashboard") || "cultivos";
       setDashKey(k);
     };
     window.addEventListener("popstate", onPop);
