@@ -20,57 +20,87 @@ const MODOS_PDF_PROD = [
 ];
 
 // ---------------------------------------------------------------------------
-// Constantes
+// Producción: datos generados por la pantalla "Dashboards > Producción" de Gorrión.
+// Sigue el modelo de Cultivos (25/11/2026). Primera versión: sin compatibilidad con el formato anterior.
+// Cada movimiento de grano llega en DOS filas, una por lado (ODT ↔ ODT Contrap.), con kilos opuestos.
+// Llega por tres vías y siempre se guarda en clientes/<slug>/produccion:
+//   - publicación directa desde Gorrión (PUT del JSON; NomSeccionFirebase = "produccion"),
+//   - "Actualizar datos" con el JSON que genera Gorrión,
+//   - "Actualizar datos" con el Excel que exporta Gorrión.
+// Reglas acordadas con el usuario (25/11/2026):
+//   - una sola campaña por perfil: sin selector de campaña;
+//   - selector de peso Neto O. / Neto D.; con Neto D., si una fila no lo tiene (vacío o 0) se usa su Neto O.;
+//   - cosecha = filas cuyo TipoDep es Cultivo con kilos negativos (el lote entrega grano); se muestra por Campo → Lote;
+//   - stock de cada depósito = suma de los kilos de sus filas; sin rinde en este dashboard;
+//   - el Articulo puede cambiar entre los dos lados de un movimiento (lo maneja Gorrión).
 // ---------------------------------------------------------------------------
+export const NODO_PRODUCCION = "produccion";
 const COLS_PROD = [
-  "Periodo","Cultivo","Fecha","Comp.","Suc","Num","Dominio","Acoplado",
-  "Conductor","Transporte","N° CP","Campo","Lote","Articulo","Titular",
+  "Campaña","Cultivo","Fecha","Comp.","Suc","Num","Dominio","Acoplado",
+  "Conductor","Transporte","Nº CP","Campo","Lote","Articulo","Titular",
   "Admin","Socio","TipoDep","ODT","TipoDepContrap.","ODT Contrap.",
   "Neto O.","Seco O.","Desc O.","Neto D.","Seco D.","Desc D.",
   "CampoOrigen","SocioContraparte",
 ];
-const STORAGE_KEY_PROD = "produccion-dataset-v1";
+const REQUERIDAS = ["Cultivo", "Fecha", "Campo", "TipoDep", "ODT", "TipoDepContrap.", "ODT Contrap.", "Neto O."];
+const STORAGE_KEY_PROD = "produccion-gorrion-v1";   // distinta de la del dashboard anterior: no lee su caché
 const PAGE_SIZE = 30;
 
 const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B", GARBANZO: "#8A5A3B" };
 const FALLBACK_COLORS = ["#5B7C4B","#C68F41","#35606B","#8A5A3B","#7C8A4B","#A1462F"];
 const cultivoColor = (name, i) => CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 
-const NULLABLE_COLS_PROD = new Set(["Neto O.","Seco O.","Desc O.","Neto D.","Seco D.","Desc D.","N° CP"]);
-const encodeCell = (col, val) => (val === null && NULLABLE_COLS_PROD.has(col) ? "" : val);
-const decodeCell = (col, val) => (val === "" && NULLABLE_COLS_PROD.has(col) ? null : val);
+// Encabezados: se comparan sin espacios, puntos ni acentos, sin distinguir mayúsculas; ° y º valen lo mismo (N° CP / Nº CP)
+const normKey = (k) => String(k || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[°º]/g, "o").replace(/[\s.]/g, "").toLowerCase();
+const COLS_POR_CLAVE = new Map(COLS_PROD.map((c) => [normKey(c), c]));
+const alinearColumnas = (o) => {
+  const r = {};
+  Object.keys(o).forEach((k) => { r[COLS_POR_CLAVE.get(normKey(k)) || k] = o[k]; });
+  return r;
+};
 const rowsFromPayload = (payload) => payload.rows.map((arr) => {
   const o = {};
-  payload.columns.forEach((c, i) => { o[c] = decodeCell(c, arr[i]); });
-  return o;
-});
+  payload.columns.forEach((c, i) => { o[c] = arr[i]; });
+  return normalizeRowProd(alinearColumnas(o));
+}).filter((r) => r["Cultivo"] || r["Campo"]);
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 const str = (v) => (v === null || v === undefined ? "" : String(v).trim());
-const num = (v) => {
-  if (typeof v === "number") return isNaN(v) ? 0 : v;
-  const n = parseFloat(String(v ?? "").replace(",", "."));
-  return isNaN(n) ? 0 : n;
+// Números: acepta 1234.5, "1234,5", "1.234,5" y "1,234.5"
+const parseNum = (v) => {
+  if (typeof v === "number") return isNaN(v) ? NaN : v;
+  let t = String(v ?? "").replace(/[^0-9,.\-]/g, "");
+  if (!t) return NaN;
+  const coma = t.lastIndexOf(","), punto = t.lastIndexOf(".");
+  if (coma >= 0 && punto >= 0) t = coma > punto ? t.replace(/\./g, "").replace(",", ".") : t.replace(/,/g, "");
+  else if (coma >= 0) t = t.replace(",", ".");
+  return parseFloat(t);
 };
+const num = (v) => { const n = parseNum(v); return isNaN(n) ? 0 : n; };
 const numOrNull = (v) => {
-  if (v === null || v === undefined || v === "") return null;
-  if (typeof v === "number") return isNaN(v) ? null : v;
-  const n = parseFloat(String(v).replace(",", "."));
+  if (v === null || v === undefined || String(v).trim() === "") return null;
+  const n = parseNum(v);
   return isNaN(n) ? null : n;
 };
+// Fechas: yyyy-mm-dd (JSON de Gorrión), Date de SheetJS (UTC) o dd/mm/aaaa (Excel exportado).
+// La fecha cero de Delphi (1899-12-30) y los años < 1901 se toman como vacías.
 const toISODate = (v) => {
-  if (v instanceof Date && !isNaN(v)) {
-    const y = v.getUTCFullYear(), m = String(v.getUTCMonth()+1).padStart(2,"0"), d = String(v.getUTCDate()).padStart(2,"0");
-    return `${y}-${m}-${d}`;
-  }
-  if (typeof v === "string" && v) {
-    const d = new Date(v);
-    if (!isNaN(d)) return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}-${String(d.getUTCDate()).padStart(2,"0")}`;
-  }
-  return "";
+  let y, m, d;
+  if (v instanceof Date && !isNaN(v)) { y = v.getUTCFullYear(); m = v.getUTCMonth() + 1; d = v.getUTCDate(); }
+  else if (typeof v === "string" && v.trim()) {
+    const t = v.trim();
+    let mm = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (mm) { y = +mm[1]; m = +mm[2]; d = +mm[3]; }
+    else if ((mm = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/))) { y = +mm[3]; m = +mm[2]; d = +mm[1]; }
+    else { const dt = new Date(t); if (isNaN(dt)) return ""; y = dt.getUTCFullYear(); m = dt.getUTCMonth() + 1; d = dt.getUTCDate(); }
+  } else return "";
+  if (!(y >= 1901)) return "";
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 };
+// Kilos de una fila según el peso elegido. Con Neto D., si la fila no lo tiene (vacío o 0) se usa Neto O.
+const kgDe = (r, peso) => (peso === "D" && r["Neto D."] ? r["Neto D."] : (r["Neto O."] || 0));
 const fmtNum = (n, d=0) => new Intl.NumberFormat("es-AR",{maximumFractionDigits:d,minimumFractionDigits:d}).format(n||0);
 const fmtTn = (n) => `${fmtNum(n,1)} tn`;
 const fmtDate = (iso) => {
@@ -87,7 +117,7 @@ const monthLabel = (ym) => {
 // Clasifica si un TipoDep es un "cultivo" (campo) o un depósito físico
 const esCultivo = (tipo) => {
   const t = str(tipo).toLowerCase();
-  return t === "cultivo" || t === "cultivos";
+  return t === "cultivo" || t === "cultivos";   // Gorrión manda "Cultivo" en TipoDep y "Cultivos" en TipoDepContrap.
 };
 
 // Tipo de movimiento inferido
@@ -98,7 +128,7 @@ const tipoMovimiento = (row) => {
 
 function normalizeRowProd(r) {
   return {
-    "Periodo":          str(r["Periodo"]),
+    "Campaña":          str(r["Campaña"]),
     "Cultivo":          str(r["Cultivo"]),
     "Fecha":            toISODate(r["Fecha"]),
     "Comp.":            str(r["Comp."]),
@@ -108,7 +138,7 @@ function normalizeRowProd(r) {
     "Acoplado":         str(r["Acoplado"]),
     "Conductor":        str(r["Conductor"]),
     "Transporte":       str(r["Transporte"]),
-    "N° CP":            numOrNull(r["N° CP"]),
+    "Nº CP":            str(r["Nº CP"]),
     "Campo":            str(r["Campo"]),
     "Lote":             str(r["Lote"]),
     "Articulo":         str(r["Articulo"]),
@@ -171,7 +201,7 @@ const VerticalBarLabel = ({ x, y, width, height, value }) => {
 export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, clienteNombre }) {
   const pdfRootRef = useRef(null);
   const storageKey = `${STORAGE_KEY_PROD}-${slug}`;
-  const cloudPath = `clientes/${slug}/produccion`;
+  const cloudPath = `clientes/${slug}/${NODO_PRODUCCION}`;
 
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null);
@@ -189,7 +219,8 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
 
   // Filtros
   const [buscar, setBuscar]   = useState("");
-  const [periodo, setPeriodo] = useState("Todos");
+  const [peso, setPeso]       = useState("O");   // "O" = Neto O., "D" = Neto D. (con Neto O. si falta)
+  const [camposAbiertos, setCamposAbiertos] = useState({});
   const [cultivo, setCultivo] = useState("Todos");
   const [admin, setAdmin]     = useState("Todos");
   const [campo, setCampo]     = useState("Todos");
@@ -197,41 +228,36 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
   const [sort, setSort] = useState({ key: "Fecha", dir: "desc" });
   const [page, setPage] = useState(1);
 
-  // Cargar desde caché local y luego suscribirse a Firebase
+  // ---------- Carga: caché local y luego Firebase en vivo (igual que Cultivos) ----------
   useEffect(() => {
     let unsub = null;
-    (async () => {
-      try {
-        const raw = localStorage.getItem(storageKey);
-        if (raw) {
-          const payload = JSON.parse(raw);
-          setRows(rowsFromPayload(payload));
-          setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: rowsFromPayload(payload).length, encabezado: leerEncabezado(payload.encabezado) });
-        }
-      } catch (e) {}
-
-      if (cloudDb) {
-        unsub = onValue(dbRef(cloudDb, cloudPath), (snap) => {
-          const payload = snap.val();
-          if (payload && payload.rows && payload.columns) {
-            const objRows = rowsFromPayload(payload);
-            setRows(objRows);
-            setMeta({ fileName: payload.fileName, updatedAt: payload.updatedAt, rowCount: objRows.length, encabezado: leerEncabezado(payload.encabezado) });
-          }
-          setSyncStatus("cloud");
-          setBootLoading(false);
-        }, () => { setSyncStatus("error"); setBootLoading(false); });
-      } else {
+    const aplicar = (payload) => {
+      const r = rowsFromPayload(payload);
+      setRows(r);
+      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: r.length, encabezado: leerEncabezado(payload.encabezado) });
+    };
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) aplicar(JSON.parse(raw));
+    } catch (e) {}
+    if (cloudDb) {
+      unsub = onValue(dbRef(cloudDb, cloudPath), (snap) => {
+        const payload = snap.val();
+        if (payload && Array.isArray(payload.rows) && Array.isArray(payload.columns)) aplicar(payload);
+        else { setRows([]); setMeta(null); }
+        setSyncStatus("cloud");
         setBootLoading(false);
-      }
-    })();
+      }, () => { setSyncStatus("error"); setBootLoading(false); });
+    } else {
+      setBootLoading(false);
+    }
     return () => { if (unsub) unsub(); };
-  }, [slug]);
+  }, [slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const persist = useCallback(async (normalized, fileName, encabezado) => {
     const payload = {
       columns: COLS_PROD,
-      rows: normalized.map((r) => COLS_PROD.map((c) => encodeCell(c, r[c]))),
+      rows: normalized.map((r) => COLS_PROD.map((c) => r[c] ?? "")),
       fileName, updatedAt: new Date().toISOString(),
       ...(encabezado ? { encabezado } : {}),
     };
@@ -248,11 +274,12 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     try {
       // Excel (primera hoja) o JSON con el mismo formato
       const { filas: json, fileName, encabezado } = await leerFilasArchivo(file);
-      validarColumnas(json, ["Periodo", "Cultivo", "Fecha", "Campo", "Admin", "TipoDep", "ODT", "TipoDepContrap.", "ODT Contrap.", "Neto O."]);
-      const normalized = json.map(normalizeRowProd).filter((r) => r["Cultivo"] || r["Campo"]);
+      const alineadas = json.map(alinearColumnas);
+      validarColumnas(alineadas, REQUERIDAS);
+      const normalized = alineadas.map(normalizeRowProd).filter((r) => r["Cultivo"] || r["Campo"]);
       setRows(normalized);
       setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length, encabezado });
-      setPage(1);
+      setPage(1); setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setTipoMov("Todos"); setBuscar("");
       try {
         await persist(normalized, fileName, encabezado);
       } catch (e) {
@@ -272,7 +299,9 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
   };
 
   // Listas para filtros
-  const periodos    = useMemo(() => Array.from(new Set(rows.map((r) => r["Periodo"]).filter(Boolean))).sort(), [rows]);
+  // Kilos según el peso elegido (campo calculado "kg"; no se guarda)
+  const rowsKg = useMemo(() => rows.map((r) => ({ ...r, kg: kgDe(r, peso) })), [rows, peso]);
+  const sinNetoD = useMemo(() => (peso === "D" ? rows.filter((r) => !r["Neto D."]).length : 0), [rows, peso]);
   const cultivos    = useMemo(() => Array.from(new Set(rows.map((r) => r["Cultivo"]).filter(Boolean))).sort(), [rows]);
   const admins      = useMemo(() => Array.from(new Set(rows.map((r) => r["Admin"]).filter(Boolean))).sort(), [rows]);
   const campos      = useMemo(() => {
@@ -283,8 +312,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
 
   // Filtrado
   const buscarQ = buscar.trim().toLowerCase();
-  const filtered = useMemo(() => rows.filter((r) => {
-    if (periodo !== "Todos" && r["Periodo"] !== periodo) return false;
+  const filtered = useMemo(() => rowsKg.filter((r) => {
     if (cultivo !== "Todos" && r["Cultivo"] !== cultivo) return false;
     if (admin   !== "Todos" && r["Admin"]   !== admin)   return false;
     if (campo   !== "Todos" && r["Campo"]   !== campo && r["CampoOrigen"] !== campo) return false;
@@ -295,49 +323,49 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
       if (!hay) return false;
     }
     return true;
-  }), [rows, periodo, cultivo, admin, campo, tipoMov, buscarQ]);
+  }), [rowsKg, cultivo, admin, campo, tipoMov, buscarQ]);
 
-  useEffect(() => { setPage(1); }, [periodo, cultivo, admin, campo, tipoMov, buscarQ]);
+  useEffect(() => { setPage(1); }, [cultivo, admin, campo, tipoMov, buscarQ]);
 
   // ---------- KPIs ----------
   const kpis = useMemo(() => {
-    // Cosecha: filas donde el TipoDep es un cultivo y Neto O. < 0 (el campo pierde grano)
-    const cosechaRows = filtered.filter((r) => esCultivo(r["TipoDep"]) && (r["Neto O."] || 0) < 0);
-    const tnCosechadas = cosechaRows.reduce((s, r) => s + Math.abs(r["Neto O."] || 0), 0) / 1000;
+    // Cosecha: filas donde el TipoDep es un cultivo y kilos < 0 (el lote entrega grano)
+    const cosechaRows = filtered.filter((r) => esCultivo(r["TipoDep"]) && r.kg < 0);
+    const tnCosechadas = cosechaRows.reduce((s, r) => s + Math.abs(r.kg), 0) / 1000;
 
-    // Depósitos: filas cuyo TipoDep NO es cultivo → acumulamos Neto O.
+    // Depósitos: filas cuyo TipoDep NO es cultivo → acumulamos los kilos del peso elegido
     const deposRows = filtered.filter((r) => !esCultivo(r["TipoDep"]));
     let stockPlanta = 0, stockSilo = 0, stockPermanente = 0;
     deposRows.forEach((r) => {
-      const v = (r["Neto O."] || 0) / 1000;
+      const v = r.kg / 1000;
       const t = str(r["TipoDep"]).toLowerCase();
       if (t === "planta de acopio") stockPlanta += v;
       else if (t === "temporal") stockSilo += v;
       else if (t === "permanente") stockPermanente += v;
     });
 
-    const viajeRows = filtered.filter((r) => r["Dominio"] && (r["Neto O."] || 0) > 0);
+    const viajeRows = filtered.filter((r) => r["Dominio"] && r.kg > 0);
     return { tnCosechadas, stockPlanta, stockSilo, stockPermanente, viajes: viajeRows.length };
   }, [filtered]);
 
   // ---------- Gráficos ----------
   const cosechaPorCultivo = useMemo(() => {
     const m = new Map();
-    filtered.filter((r) => esCultivo(r["TipoDep"]) && (r["Neto O."] || 0) < 0)
+    filtered.filter((r) => esCultivo(r["TipoDep"]) && r.kg < 0)
       .forEach((r) => {
         const c = r["Cultivo"] || "(sin cultivo)";
-        m.set(c, (m.get(c) || 0) + Math.abs(r["Neto O."] || 0) / 1000);
+        m.set(c, (m.get(c) || 0) + Math.abs(r.kg) / 1000);
       });
     return Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   }, [filtered]);
 
   const cosechaPorCampo = useMemo(() => {
     const m = new Map();
-    filtered.filter((r) => esCultivo(r["TipoDep"]) && (r["Neto O."] || 0) < 0)
+    filtered.filter((r) => esCultivo(r["TipoDep"]) && r.kg < 0)
       .forEach((r) => {
         const c = r["Campo"] || r["CampoOrigen"] || "(sin campo)";
         if (c.toUpperCase().includes("DEPOSITO")) return;
-        m.set(c, (m.get(c) || 0) + Math.abs(r["Neto O."] || 0) / 1000);
+        m.set(c, (m.get(c) || 0) + Math.abs(r.kg) / 1000);
       });
     return Array.from(m.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   }, [filtered]);
@@ -345,13 +373,13 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
   const evolucionMensual = useMemo(() => {
     const m = new Map();
     const cultList = cultivos;
-    filtered.filter((r) => esCultivo(r["TipoDep"]) && (r["Neto O."] || 0) < 0 && r["Fecha"])
+    filtered.filter((r) => esCultivo(r["TipoDep"]) && r.kg < 0 && r["Fecha"])
       .forEach((r) => {
         const ym = r["Fecha"].slice(0, 7);
         if (!m.has(ym)) m.set(ym, {});
         const bucket = m.get(ym);
         const c = r["Cultivo"] || "(sin cultivo)";
-        bucket[c] = (bucket[c] || 0) + Math.abs(r["Neto O."] || 0) / 1000;
+        bucket[c] = (bucket[c] || 0) + Math.abs(r.kg) / 1000;
       });
     return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([ym, bucket]) => ({
       ym, label: monthLabel(ym), ...bucket,
@@ -363,12 +391,33 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     filtered.filter((r) => !esCultivo(r["TipoDep"])).forEach((r) => {
       const key = `${r["TipoDep"]}||${r["ODT"]}`;
       if (!m.has(key)) m.set(key, { tipo: r["TipoDep"], nombre: r["ODT"], stock: 0 });
-      m.get(key).stock += (r["Neto O."] || 0) / 1000;
+      m.get(key).stock += r.kg / 1000;
     });
     return Array.from(m.values()).filter((e) => Math.abs(e.stock) > 0.01).sort((a, b) => b.stock - a.stock);
   }, [filtered]);
 
-  // stockPlantaChart / stockSiloChart ya no se usan — reemplazados por el acordeón unificado
+  // Cosecha por Campo → Lote (filas de cosecha: TipoDep = Cultivo y kilos < 0)
+  const cosechaPorLote = useMemo(() => {
+    const campos = new Map();
+    filtered.filter((r) => esCultivo(r["TipoDep"]) && r.kg < 0).forEach((r) => {
+      const c = r["Campo"] || r["CampoOrigen"] || "(sin campo)";
+      if (!campos.has(c)) campos.set(c, { campo: c, tn: 0, viajes: 0, lotes: new Map() });
+      const g = campos.get(c);
+      const lk = `${r["Lote"]}||${r["Cultivo"]}`;
+      if (!g.lotes.has(lk)) g.lotes.set(lk, { lote: r["Lote"] || "(sin lote)", cultivo: r["Cultivo"], tn: 0, viajes: 0, primera: "", ultima: "" });
+      const l = g.lotes.get(lk);
+      const tn = Math.abs(r.kg) / 1000;
+      g.tn += tn; g.viajes += 1; l.tn += tn; l.viajes += 1;
+      if (r["Fecha"]) {
+        if (!l.primera || r["Fecha"] < l.primera) l.primera = r["Fecha"];
+        if (!l.ultima || r["Fecha"] > l.ultima) l.ultima = r["Fecha"];
+      }
+    });
+    return Array.from(campos.values())
+      .map((g) => ({ ...g, lotes: Array.from(g.lotes.values()).sort((a, b) => a.lote.localeCompare(b.lote, "es", { numeric: true }) || a.cultivo.localeCompare(b.cultivo)) }))
+      .sort((a, b) => b.tn - a.tn);
+  }, [filtered]);
+  const toggleCampoLote = (c) => setCamposAbiertos((p) => ({ ...p, [c]: !p[c] }));
 
   // ---------- Tabla detalle ----------
   const sorted = useMemo(() => {
@@ -404,7 +453,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
   // ---------- PDF ----------
   const exportarPDF = async (modo, opciones = {}) => {
     const filtros = [];
-    if (periodo !== "Todos") filtros.push(["Período", periodo]);
+    filtros.push(["Peso", peso === "D" ? "Neto D. (Neto O. si falta)" : "Neto O."]);
     if (cultivo !== "Todos") filtros.push(["Cultivo", cultivo]);
     if (admin !== "Todos") filtros.push(["Admin", admin]);
     if (campo !== "Todos") filtros.push(["Campo", campo]);
@@ -429,8 +478,8 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
       if (!items.length) return;
       const filasGrupo = items.map((e) => {
         const movs = movsDe(e.nombre);
-        const ent = movs.filter((r) => (r["Neto O."] || 0) > 0).reduce((acc, r) => acc + r["Neto O."], 0) / 1000;
-        const sal = movs.filter((r) => (r["Neto O."] || 0) < 0).reduce((acc, r) => acc + Math.abs(r["Neto O."]), 0) / 1000;
+        const ent = movs.filter((r) => r.kg > 0).reduce((acc, r) => acc + r.kg, 0) / 1000;
+        const sal = movs.filter((r) => r.kg < 0).reduce((acc, r) => acc + Math.abs(r.kg), 0) / 1000;
         depositos.push({ grupo: label, dep: e, movs, ent, sal });
         return { e, ent, sal };
       });
@@ -487,7 +536,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
             startY: y,
             head: [["Fecha", "Cultivo", "Campo / Origen", "Contraparte", "Kg (neto)"]],
             body: movs.map((r) => {
-              const kg = r["Neto O."] || 0;
+              const kg = r.kg;
               return [
                 fmtDate(r["Fecha"]), r["Cultivo"], r["CampoOrigen"] || r["Campo"] || "-", r["ODT Contrap."] || "-",
                 { content: `${kg > 0 ? "+" : ""}${fmtNum(kg / 1000, 1)} tn`, styles: { fontStyle: "bold", textColor: kg > 0 ? VERDE : OXIDO } },
@@ -516,15 +565,30 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
       modo, titulo: "Producción", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Produccion", encabezado: meta?.encabezado,
       modoLabel: modo === "depositos" ? `Totales por depósito${opciones.detalle ? " con detalle" : ""}` : undefined,
       tablas: [
-        { titulo: "Stock por depósito", nota: "Toneladas. Ingresado y egresado según Neto O. de los movimientos filtrados.",
+        ...(cosechaPorLote.length ? [{
+          titulo: "Cosecha por campo y lote", nota: "Toneladas entregadas por cada lote. Viajes = filas de cosecha.",
+          head: ["Campo / Lote", "Cultivo", "Período", "Viajes", "Cosechado"], align: [null, null, null, "right", "right"],
+          body: [
+            ...cosechaPorLote.flatMap((g) => [
+              filaGrupo(g.campo, 5, [fmtNum(g.viajes), fmtTn(g.tn)]),
+              ...g.lotes.map((l) => [
+                { content: l.lote, styles: { cellPadding: { top: 1.4, bottom: 1.4, left: 6, right: 1.4 } } },
+                l.cultivo, l.primera ? `${fmtDate(l.primera)} – ${fmtDate(l.ultima)}` : "-", fmtNum(l.viajes),
+                { content: fmtTn(l.tn), styles: { fontStyle: "bold" } },
+              ]),
+            ]),
+            filaTotal(["Total", "", "", fmtNum(cosechaPorLote.reduce((a, g) => a + g.viajes, 0)), fmtTn(cosechaPorLote.reduce((a, g) => a + g.tn, 0))]),
+          ],
+        }] : []),
+        { titulo: "Stock por depósito", nota: `Toneladas. Ingresado y egresado según ${peso === "D" ? "Neto D. (Neto O. si falta)" : "Neto O."} de los movimientos filtrados.`,
           head: ["Depósito", "Ingresado (tn)", "Egresado (tn)", "Stock"], align: [null, "right", "right", "right"], body: stockBody },
         ...(opciones.detalle ? [detalle] : []),
       ],
     });
   };
 
-  const resetFiltros = () => { setBuscar(""); setPeriodo("Todos"); setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setTipoMov("Todos"); };
-  const hayFiltros = buscar !== "" || periodo !== "Todos" || cultivo !== "Todos" || admin !== "Todos" || campo !== "Todos" || tipoMov !== "Todos";
+  const resetFiltros = () => { setBuscar(""); setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setTipoMov("Todos"); };
+  const hayFiltros = buscar !== "" || cultivo !== "Todos" || admin !== "Todos" || campo !== "Todos" || tipoMov !== "Todos";
 
   // Sub-header común a todos los dashboards: datos, estado de sincronización y controles de carga
   const subHeader = (
@@ -534,6 +598,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
           <>Datos de <strong>{meta.fileName}</strong> · {fmtNum(meta.rowCount)} registros · actualizado {new Date(meta.updatedAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</>
         ) : isAdmin ? "Cargá tu planilla para empezar a consultar los datos" : "Todavía no hay datos cargados para este cliente."}
         {aviso && <span style={{ color: "var(--green)", marginLeft: 8 }}>· {aviso}</span>}
+        {meta && sinNetoD > 0 && <span style={{ color: "var(--ink-soft)", marginLeft: 8 }}>· {fmtNum(sinNetoD)} {sinNetoD === 1 ? "fila sin Neto D. usa" : "filas sin Neto D. usan"} Neto O. (*)</span>}
         {error && meta && <span style={{ color: "var(--rust)", marginLeft: 8 }}>· {error}</span>}
       </div>
       {cloudDb && (
@@ -583,7 +648,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
             <FileSpreadsheet size={40} color="var(--ink-soft)" />
             <div style={{ fontSize: 16, fontWeight: 700 }}>{parsing ? "Leyendo…" : "Arrastrá el Excel o JSON de Producción"}</div>
             <div style={{ fontSize: 13, color: "var(--ink-soft)", maxWidth: 380 }}>
-              Planilla de movimientos con columnas ODT, TipoDep, Neto O., etc.
+              JSON o Excel que genera la pantalla de Producción de Gorrión.
             </div>
             <button className="agri-btn" disabled={parsing} onClick={() => fileInputRef.current?.click()}>
               <Upload size={14} /> {parsing ? "Procesando…" : "Elegir archivo"}
@@ -616,10 +681,11 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
                   onChange={(e) => setBuscar(e.target.value)}
                 />
               </div>
-              <select className="agri-select" value={periodo}  onChange={(e) => setPeriodo(e.target.value)}>
-                <option value="Todos">Todos los períodos</option>
-                {periodos.map((p) => <option key={p} value={p}>{p}</option>)}
-              </select>
+              <div className="agri-chip-group" title="Peso con el que se calculan cosecha y stock" style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: "var(--ink-soft)", marginRight: 2 }}>Peso:</span>
+                <button className="agri-chip" data-active={peso === "O"} onClick={() => setPeso("O")}>Neto O.</button>
+                <button className="agri-chip" data-active={peso === "D"} onClick={() => setPeso("D")}>Neto D.</button>
+              </div>
               <select className="agri-select" value={admin}    onChange={(e) => setAdmin(e.target.value)}>
                 <option value="Todos">Todas las admins</option>
                 {admins.map((a) => <option key={a} value={a}>{a}</option>)}
@@ -669,7 +735,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
                   <XAxis dataKey="name" tick={{ fontSize: 12, fill: "#6B5E4F" }} axisLine={{ stroke: "#DCD2B8" }} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
                   <Tooltip content={<ChartTooltip unit="tn" />} />
-                  <Bar dataKey="value" name="Cosechado" radius={[3,3,0,0]}>
+                  <Bar dataKey="value" name="Cosechado" radius={[3,3,0,0]} maxBarSize={56}>
                     {cosechaPorCultivo.map((e,i) => <Cell key={i} fill={cultivoColor(e.name,i)} />)}
                     <LabelList dataKey="value" content={<VerticalBarLabel />} />
                   </Bar>
@@ -685,7 +751,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
                   <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
                   <YAxis type="category" dataKey="name" width={120} tick={{ fontSize: 11, fill: "#2B2118" }} axisLine={false} tickLine={false} />
                   <Tooltip content={<ChartTooltip unit="tn" />} />
-                  <Bar dataKey="value" name="Cosechado" fill="#B8842E" radius={[0,3,3,0]}>
+                  <Bar dataKey="value" name="Cosechado" fill="#B8842E" radius={[0,3,3,0]} maxBarSize={32}>
                     <LabelList dataKey="value" content={<HorizontalBarLabel />} />
                   </Bar>
                 </BarChart>
@@ -709,6 +775,55 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
             </div>
           </div>
 
+          {/* Cosecha por campo y lote */}
+          {cosechaPorLote.length > 0 && (
+            <div data-pdf="pantalla" className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12, flexWrap: "wrap", gap: 6 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Cosecha por campo y lote</div>
+                <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>tocá un campo para ver sus lotes</span>
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th className="agri-th">Campo / Lote</th>
+                    <th className="agri-th">Cultivo</th>
+                    <th className="agri-th">Período de cosecha</th>
+                    <th className="agri-th" style={{ textAlign: "right" }}>Viajes</th>
+                    <th className="agri-th" style={{ textAlign: "right" }}>Cosechado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cosechaPorLote.map((g) => {
+                    const abierto = !!camposAbiertos[g.campo];
+                    return (
+                      <React.Fragment key={g.campo}>
+                        <tr style={{ cursor: "pointer", background: "var(--surface-alt, #F0EBE0)" }} onClick={() => toggleCampoLote(g.campo)}>
+                          <td style={{ padding: "10px 12px", fontWeight: 700, fontSize: 13 }} colSpan={3}>
+                            <span style={{ color: "var(--ink-soft)", fontSize: 12, marginRight: 6 }}>{abierto ? "▾" : "▸"}</span>
+                            {g.campo} <span style={{ fontWeight: 400, color: "var(--ink-soft)", fontSize: 12 }}>· {g.lotes.length} {g.lotes.length === 1 ? "lote" : "lotes"}</span>
+                          </td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, fontSize: 13 }}>{fmtNum(g.viajes)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap" }}>{fmtTn(g.tn)}</td>
+                        </tr>
+                        {abierto && g.lotes.map((l) => (
+                          <tr key={`${l.lote}|${l.cultivo}`} className="agri-tr">
+                            <td className="agri-td" style={{ paddingLeft: 32 }}>{l.lote}</td>
+                            <td className="agri-td">{l.cultivo}</td>
+                            <td className="agri-td" style={{ fontSize: 12, color: "var(--ink-soft)", whiteSpace: "nowrap" }}>
+                              {l.primera ? (l.primera === l.ultima ? fmtDate(l.primera) : `${fmtDate(l.primera)} – ${fmtDate(l.ultima)}`) : "—"}
+                            </td>
+                            <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(l.viajes)}</td>
+                            <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtTn(l.tn)}</td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {/* Stock por depósito — acordeón unificado */}
           {stockPorDeposito.length > 0 && (() => {
             const grupos = [
@@ -722,8 +837,8 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
                 const fa = a["Fecha"] || "", fb = b["Fecha"] || "";
                 return fa > fb ? -1 : fa < fb ? 1 : 0;
               });
-              const totalEntradas = allMovs.filter((r) => (r["Neto O."] || 0) > 0).reduce((s, r) => s + (r["Neto O."] || 0), 0) / 1000;
-              const totalSalidas  = allMovs.filter((r) => (r["Neto O."] || 0) < 0).reduce((s, r) => s + Math.abs(r["Neto O."] || 0), 0) / 1000;
+              const totalEntradas = allMovs.filter((r) => r.kg > 0).reduce((s, r) => s + r.kg, 0) / 1000;
+              const totalSalidas  = allMovs.filter((r) => r.kg < 0).reduce((s, r) => s + Math.abs(r.kg), 0) / 1000;
               return (
                 <tr>
                   <td colSpan={3} style={{ padding: 0, background: "var(--bg)" }}>
@@ -746,14 +861,14 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
                         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 500 }}>
                           <thead>
                             <tr>
-                              {[["Fecha","Fecha"],["Cultivo","Cultivo"],["Campo","Campo / Origen"],["ODT Contrap.","Contraparte"],["Neto O.","Kg (neto)"]].map(([k,l]) => (
+                              {[["Fecha","Fecha"],["Cultivo","Cultivo"],["Campo","Campo / Origen"],["ODT Contrap.","Contraparte"],["kg","Kg (neto)"]].map(([k,l]) => (
                                 <th key={k} className="agri-th">{l}</th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
                             {allMovs.map((r, i) => {
-                              const kg = r["Neto O."] || 0;
+                              const kg = r.kg;
                               const esEntrada = kg > 0;
                               return (
                                 <tr key={i} className="agri-tr">
@@ -852,7 +967,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
                   <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
                     <thead>
                       <tr>
-                        {[["Fecha","Fecha"],["Cultivo","Cultivo"],["Campo","Campo"],["Lote","Lote"],["TipoDep","Tipo dep."],["ODT","ODT"],["TipoDepContrap.","Tipo contrap."],["ODT Contrap.","ODT contrap."],["Neto O.","Neto O. (kg)"],["Dominio","Dominio"],["Transporte","Transporte"]].map(([key, label]) => (
+                        {[["Fecha","Fecha"],["Cultivo","Cultivo"],["Campo","Campo"],["Lote","Lote"],["TipoDep","Tipo dep."],["ODT","ODT"],["TipoDepContrap.","Tipo contrap."],["ODT Contrap.","ODT contrap."],["kg", peso === "D" ? "Neto D. (kg)" : "Neto O. (kg)"],["Dominio","Dominio"],["Transporte","Transporte"]].map(([key, label]) => (
                           <th key={key} className="agri-th" onClick={() => toggleSort(key)}>
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
                               {label} {sort.key === key && <ArrowUpDown size={11} />}
@@ -872,8 +987,9 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
                           <td className="agri-td" style={{ fontSize: 11 }}>{r["ODT"]}</td>
                           <td className="agri-td" style={{ fontSize: 11, color: "var(--ink-soft)" }}>{r["TipoDepContrap."]}</td>
                           <td className="agri-td" style={{ fontSize: 11 }}>{r["ODT Contrap."]}</td>
-                          <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, color: (r["Neto O."] || 0) < 0 ? "var(--rust)" : "var(--green)" }}>
-                            {r["Neto O."] === null ? "—" : fmtNum(r["Neto O."], 0)}
+                          <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, color: r.kg < 0 ? "var(--rust)" : "var(--green)" }}
+                            title={peso === "D" && !r["Neto D."] ? "Sin Neto D.: se usa Neto O." : undefined}>
+                            {fmtNum(r.kg, 0)}{peso === "D" && !r["Neto D."] ? " *" : ""}
                           </td>
                           <td className="agri-td" style={{ fontSize: 11 }}>{r["Dominio"]}</td>
                           <td className="agri-td" style={{ fontSize: 11 }}>{r["Transporte"]}</td>
