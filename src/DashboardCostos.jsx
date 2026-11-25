@@ -907,7 +907,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
 
   // Resumen agrupado por Tipo Det. (Insumos primero, Servicios después) > Rubro > Concepto
   const [loteDetailTab, setLoteDetailTab] = useState("resumen");
-  useEffect(() => { setLoteDetailTab("resumen"); }, [selectedLoteKey]);
+  // La pestaña elegida (Resumen por rubro / Movimientos) se mantiene al cambiar de lote
   const selectedLoteSummary = useMemo(() => construirResumenLote(selectedLoteRows, selectedLoteInfo ? selectedLoteInfo.ha : 0), [selectedLoteRows, selectedLoteInfo]);
   // Si cambian los filtros generales y el lote seleccionado deja de existir, lo deseleccionamos
   useEffect(() => {
