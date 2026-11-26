@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal } from "./pdfExport.jsx";
-import { leerFilasArchivo, leerEncabezado, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
+import { leerFilasArchivo, leerEncabezado, leerCultivos, mapaColoresCultivos, colorDeCultivo, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 
 // ---------------------------------------------------------------------------
 // Cultivos: datos generados por la pantalla "Dashboards > Cultivos" de Gorrión.
@@ -43,7 +43,10 @@ const SIN_CULTIVO = "__SIN__";
 const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B", GARBANZO: "#8A5A3B", TRIGO: "#B8842E", GIRASOL: "#A1462F" };
 // Colores para cultivos sin color propio: distintos de los fijos de arriba, así dos cultivos no comparten color
 const FALLBACK_COLORS = ["#7C8A4B", "#6E5A8A", "#3F7F6E", "#B26A8E", "#8C7A3A", "#4F6F8F"];
-const cultivoColor = (name, i) => CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
+// Colores de los cultivos: primero los que manda Gorrión en la sección "cultivos" del JSON
+// (administrador de cultivos de cada Gorrión); si no vino, la paleta fija y después la de respaldo.
+let coloresGorrion = new Map();
+const cultivoColor = (name, i) => colorDeCultivo(coloresGorrion, name) || CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 const GRIS_HABILITADO = "#B9AE94";
 
 // ---------------------------------------------------------------------------
@@ -274,8 +277,10 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     let unsub = null;
     const aplicar = (payload) => {
       const r = filasDesdePayload(payload);
+      const cultivosGorrion = leerCultivos(payload.cultivos);
+      coloresGorrion = mapaColoresCultivos(cultivosGorrion);
       setRows(r);
-      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: r.length, encabezado: leerEncabezado(payload.encabezado) });
+      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: r.length, encabezado: leerEncabezado(payload.encabezado), cultivos: cultivosGorrion });
     };
     try {
       const raw = localStorage.getItem(storageKey);
@@ -295,12 +300,13 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     return () => { if (unsub) unsub(); };
   }, [slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const persist = useCallback(async (all, fileName, encabezado) => {
+  const persist = useCallback(async (all, fileName, encabezado, cultivos) => {
     const payload = {
       columns: COLS,
       rows: all.map((r) => COLS.map((c) => r[c] ?? "")),
       fileName, updatedAt: new Date().toISOString(),
       ...(encabezado ? { encabezado } : {}),
+      ...(cultivos ? { cultivos } : {}),
     };
     try { localStorage.setItem(storageKey, JSON.stringify(payload)); } catch (e) {}
     if (cloudDb) {
@@ -314,13 +320,14 @@ export default function DashboardCultivos({ slug, isAdmin, cloudDb, onLogout, cl
     if (!file) return;
     setParsing(true); setError("");
     try {
-      const { filas, fileName, encabezado } = await leerFilasArchivo(file, { hoja: "mayor" });
+      const { filas, fileName, encabezado, cultivos } = await leerFilasArchivo(file, { hoja: "mayor" });
       validar(filas);
       const all = normalizar(filas);
+      coloresGorrion = mapaColoresCultivos(cultivos);   // un Excel no trae colores: vuelve a la paleta
       setRows(all);
-      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: all.length, encabezado });
+      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: all.length, encabezado, cultivos });
       setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setVariedad("Todos"); setEstado("Todos"); setBuscar("");
-      try { await persist(all, fileName, encabezado); }
+      try { await persist(all, fileName, encabezado, cultivos); }
       catch (e) { setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`); }
     } catch (e) {
       setError("No pude leer el archivo: " + e.message);

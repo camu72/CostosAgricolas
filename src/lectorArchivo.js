@@ -12,6 +12,8 @@ import * as XLSX from "xlsx";
 // En el formato 1, "" en una celda se toma como vacío (null).
 // El formato 1 puede traer además "encabezado": { "titulo": "...", "detalle": "..." } (opcional),
 // un texto que Gorrión manda para mostrar junto al nombre del perfil (p.ej. la campaña).
+// También puede traer "cultivos": [ { "nombre": "SOJA", "color": "#5B7C4B" }, ... ] (opcional):
+// los cultivos del administrador de cultivos de cada Gorrión, con su color.
 // ---------------------------------------------------------------------------
 
 export const ACCEPT_ARCHIVOS = ".xlsx,.xls,.xlsm,.json";
@@ -26,6 +28,34 @@ export function leerEncabezado(e) {
   if (detalle) o.detalle = detalle;
   return Object.keys(o).length ? o : null;
 }
+
+const normCultivo = (s) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
+
+/**
+ * Sección "cultivos" opcional: lista de { nombre, color }. Devuelve la lista limpia
+ * (color en "#rrggbb"; se acepta sin "#" o en formato corto "#rgb"), o null si no hay ninguno válido.
+ */
+export function leerCultivos(lista) {
+  if (!Array.isArray(lista)) return null;
+  const out = [];
+  const vistos = new Set();
+  lista.forEach((c) => {
+    if (!c || typeof c !== "object") return;
+    const nombre = String(c.nombre ?? "").trim();
+    let color = String(c.color ?? "").trim().replace(/^#/, "");
+    if (/^[0-9a-f]{3}$/i.test(color)) color = color.split("").map((x) => x + x).join("");
+    if (!nombre || !/^[0-9a-f]{6}$/i.test(color) || vistos.has(normCultivo(nombre))) return;
+    vistos.add(normCultivo(nombre));
+    out.push({ nombre, color: `#${color.toLowerCase()}` });
+  });
+  return out.length ? out : null;
+}
+
+/** Mapa NOMBRE NORMALIZADO → color, para buscar sin distinguir mayúsculas ni acentos. */
+export function mapaColoresCultivos(lista) {
+  return new Map((lista || []).map((c) => [normCultivo(c.nombre), c.color]));
+}
+export const colorDeCultivo = (mapa, nombre) => (mapa && mapa.size ? mapa.get(normCultivo(nombre)) : undefined);
 
 const esJSON = (file) => /\.json$/i.test(file.name) || file.type === "application/json";
 
@@ -51,7 +81,7 @@ export async function leerFilasArchivo(file, { hoja = "primera" } = {}) {
     });
   }
   const filas = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: null, raw: true });
-  return { filas, fileName: file.name, origen: "excel", encabezado: null };
+  return { filas, fileName: file.name, origen: "excel", encabezado: null, cultivos: null };
 }
 
 async function leerJSON(file) {
@@ -65,7 +95,7 @@ async function leerJSON(file) {
   if (Array.isArray(data)) {
     if (data.some((o) => !o || typeof o !== "object" || Array.isArray(o)))
       throw new Error("la lista debe contener objetos { columna: valor }");
-    return { filas: data, fileName: file.name, origen: "json", encabezado: null };
+    return { filas: data, fileName: file.name, origen: "json", encabezado: null, cultivos: null };
   }
 
   // Formato 1: { columns, rows }
@@ -82,7 +112,7 @@ async function leerJSON(file) {
     cols.forEach((c, j) => { const v = arr[j]; o[c] = v === "" || v === undefined ? null : v; });
     return o;
   });
-  return { filas, fileName: typeof data.fileName === "string" && data.fileName ? data.fileName : file.name, origen: "json", encabezado: leerEncabezado(data.encabezado) };
+  return { filas, fileName: typeof data.fileName === "string" && data.fileName ? data.fileName : file.name, origen: "json", encabezado: leerEncabezado(data.encabezado), cultivos: leerCultivos(data.cultivos) };
 }
 
 /**

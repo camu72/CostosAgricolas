@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 import { ref, onValue, set as dbSet } from "firebase/database";
 import { CLOUD_CLIENTS_BASE } from "./firebaseConfig.js";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal, MODOS_PDF } from "./pdfExport.jsx";
-import { leerFilasArchivo, validarColumnas, leerEncabezado, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
+import { leerFilasArchivo, validarColumnas, leerEncabezado, leerCultivos, mapaColoresCultivos, colorDeCultivo, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, Legend, LabelList,
@@ -64,7 +64,10 @@ const GRIS_HABILITACION = "#B9AE94";
 const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B", GARBANZO: "#8A5A3B", TRIGO: "#B8842E", GIRASOL: "#A1462F" };
 // Colores para cultivos sin color propio: distintos de los fijos de arriba, así dos cultivos no comparten color
 const FALLBACK_COLORS = ["#7C8A4B", "#6E5A8A", "#3F7F6E", "#B26A8E", "#8C7A3A", "#4F6F8F"];
-const cultivoColor = (name, i) => esHabilitacion(name) ? GRIS_HABILITACION : (CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length]);
+// Colores de los cultivos: primero los que manda Gorrión en la sección "cultivos" del JSON
+// (administrador de cultivos de cada Gorrión); si no vino, la paleta fija y después la de respaldo.
+let coloresGorrion = new Map();
+const cultivoColor = (name, i) => colorDeCultivo(coloresGorrion, name) || (esHabilitacion(name) ? GRIS_HABILITACION : (CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length]));
 // Orden de cultivos: alfabético, con Habilitación siempre al final
 const ordenCultivos = (a, b) => (esHabilitacion(a) - esHabilitacion(b)) || String(a).localeCompare(String(b), "es");
 
@@ -550,8 +553,10 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     let unsub = null;
     const aplicar = (payload) => {
       const objRows = rowsFromPayload(payload);
+      const cultivosGorrion = leerCultivos(payload.cultivos);
+      coloresGorrion = mapaColoresCultivos(cultivosGorrion);
       setRows(objRows);
-      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: objRows.length, encabezado: leerEncabezado(payload.encabezado) });
+      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: objRows.length, encabezado: leerEncabezado(payload.encabezado), cultivos: cultivosGorrion });
     };
     try {
       const raw = localStorage.getItem(storageKey);
@@ -572,12 +577,13 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
   }, [slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Se guarda con las columnas de Gorrión: el mismo formato que publica Gorrión
-  const persist = useCallback(async (normalizedRows, fileName, encabezado) => {
+  const persist = useCallback(async (normalizedRows, fileName, encabezado, cultivos) => {
     const payload = {
       columns: COLS,
       rows: normalizedRows.map((r) => COLS.map((c) => r[c] ?? "")),
       fileName, updatedAt: new Date().toISOString(),
       ...(encabezado ? { encabezado } : {}),
+      ...(cultivos ? { cultivos } : {}),
     };
     try { localStorage.setItem(storageKey, JSON.stringify(payload)); } catch (e) {}
     if (cloudDb) {
@@ -592,15 +598,16 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     setError("");
     try {
       // Excel (hoja con más filas) o JSON con el mismo formato
-      const { filas: json, fileName, encabezado } = await leerFilasArchivo(file, { hoja: "mayor" });
+      const { filas: json, fileName, encabezado, cultivos } = await leerFilasArchivo(file, { hoja: "mayor" });
       const alineadas = json.map(alinearColumnas);
       validarColumnas(alineadas, REQUERIDAS);
       const normalized = alineadas.map(normalizeRow).filter((r) => r["Campo"] || r["Cultivo"] || r["Concepto"]);
+      coloresGorrion = mapaColoresCultivos(cultivos);   // un Excel no trae colores: vuelve a la paleta
       setRows(normalized);
-      const newMeta = { fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length, encabezado };
+      const newMeta = { fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length, encabezado, cultivos };
       setMeta(newMeta);
       setPage(1);
-      try { await persist(normalized, fileName, encabezado); }
+      try { await persist(normalized, fileName, encabezado, cultivos); }
       catch (e) { setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`); }
 
       // Si los filtros activos dejan el dashboard vacío con los datos nuevos, los limpiamos

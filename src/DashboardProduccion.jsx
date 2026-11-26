@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { ref as dbRef, onValue, set as dbSet } from "firebase/database";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal, MODOS_PDF } from "./pdfExport.jsx";
-import { leerFilasArchivo, validarColumnas, leerEncabezado, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
+import { leerFilasArchivo, validarColumnas, leerEncabezado, leerCultivos, mapaColoresCultivos, colorDeCultivo, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 
 // PDF de Producción: Resumen, Pantalla y Totales por depósito (con detalle opcional)
 const MODOS_PDF_PROD = [
@@ -49,7 +49,10 @@ const PAGE_SIZE = 30;
 const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B", GARBANZO: "#8A5A3B", TRIGO: "#B8842E", GIRASOL: "#A1462F" };
 // Colores para cultivos sin color propio: distintos de los fijos de arriba, así dos cultivos no comparten color
 const FALLBACK_COLORS = ["#7C8A4B", "#6E5A8A", "#3F7F6E", "#B26A8E", "#8C7A3A", "#4F6F8F"];
-const cultivoColor = (name, i) => CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
+// Colores de los cultivos: primero los que manda Gorrión en la sección "cultivos" del JSON
+// (administrador de cultivos de cada Gorrión); si no vino, la paleta fija y después la de respaldo.
+let coloresGorrion = new Map();
+const cultivoColor = (name, i) => colorDeCultivo(coloresGorrion, name) || CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 
 // Encabezados: se comparan sin espacios, puntos ni acentos, sin distinguir mayúsculas; ° y º valen lo mismo (N° CP / Nº CP)
 const normKey = (k) => String(k || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[°º]/g, "o").replace(/[\s.]/g, "").toLowerCase();
@@ -234,8 +237,10 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     let unsub = null;
     const aplicar = (payload) => {
       const r = rowsFromPayload(payload);
+      const cultivosGorrion = leerCultivos(payload.cultivos);
+      coloresGorrion = mapaColoresCultivos(cultivosGorrion);
       setRows(r);
-      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: r.length, encabezado: leerEncabezado(payload.encabezado) });
+      setMeta({ fileName: payload.fileName || "", updatedAt: payload.updatedAt, rowCount: r.length, encabezado: leerEncabezado(payload.encabezado), cultivos: cultivosGorrion });
     };
     try {
       const raw = localStorage.getItem(storageKey);
@@ -255,12 +260,13 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     return () => { if (unsub) unsub(); };
   }, [slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const persist = useCallback(async (normalized, fileName, encabezado) => {
+  const persist = useCallback(async (normalized, fileName, encabezado, cultivos) => {
     const payload = {
       columns: COLS_PROD,
       rows: normalized.map((r) => COLS_PROD.map((c) => r[c] ?? "")),
       fileName, updatedAt: new Date().toISOString(),
       ...(encabezado ? { encabezado } : {}),
+      ...(cultivos ? { cultivos } : {}),
     };
     try { localStorage.setItem(storageKey, JSON.stringify(payload)); } catch (e) {}
     if (cloudDb) {
@@ -274,15 +280,16 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
     setParsing(true); setError(""); setAviso("");
     try {
       // Excel (primera hoja) o JSON con el mismo formato
-      const { filas: json, fileName, encabezado } = await leerFilasArchivo(file);
+      const { filas: json, fileName, encabezado, cultivos } = await leerFilasArchivo(file);
       const alineadas = json.map(alinearColumnas);
       validarColumnas(alineadas, REQUERIDAS);
       const normalized = alineadas.map(normalizeRowProd).filter((r) => r["Cultivo"] || r["Campo"]);
+      coloresGorrion = mapaColoresCultivos(cultivos);   // un Excel no trae colores: vuelve a la paleta
       setRows(normalized);
-      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length, encabezado });
+      setMeta({ fileName, updatedAt: new Date().toISOString(), rowCount: normalized.length, encabezado, cultivos });
       setPage(1); setCultivo("Todos"); setAdmin("Todos"); setCampo("Todos"); setTipoMov("Todos"); setBuscar("");
       try {
-        await persist(normalized, fileName, encabezado);
+        await persist(normalized, fileName, encabezado, cultivos);
       } catch (e) {
         setError(`El archivo se leyó, pero no se pudo guardar en la nube (${e.code || e.message}). Sólo lo ves en este navegador.`);
       }
