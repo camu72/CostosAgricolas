@@ -302,11 +302,14 @@ const irA = (params) => {
   window.history.pushState({}, "", qs ? `?${qs}` : urlBase());
   window.dispatchEvent(new Event("popstate"));
 };
+// Fecha y hora por separado: la tarjeta muestra la fecha en una línea y la hora completa en la siguiente
 const fmtFechaHora = (iso) => {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (isNaN(d)) return "";
-  return d.toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d)) return null;
+  return {
+    fecha: d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" }),
+    hora: d.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
+  };
 };
 const listaPerfiles = (val) => Object.entries(val || {})
   .filter(([, v]) => v && typeof v === "object")
@@ -381,7 +384,7 @@ function TarjetaPerfil({ perfil, appUrl, esAdmin, publicadores, adminUid, onErro
   return (
     <div className="agri-card" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, opacity: borrando ? 0.5 : 1 }}>
       <div>
-        <div style={{ fontWeight: 700, fontSize: 15 }}>{perfil.nombre}</div>
+        <div className="agri-serif" style={{ fontWeight: 700, fontSize: 18, lineHeight: 1.2, marginBottom: 2 }}>{perfil.nombre}</div>
         <div style={{ fontSize: 12, color: "var(--ink-soft)", wordBreak: "break-all" }}>{link}</div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
@@ -393,7 +396,14 @@ function TarjetaPerfil({ perfil, appUrl, esAdmin, publicadores, adminUid, onErro
               onClick={() => irA({ cliente: perfil.slug, dashboard: d.key })}
               style={{ flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "8px 10px", opacity: f ? 1 : 0.55, cursor: f ? "pointer" : "default" }}>
               <span>{d.label}</span>
-              <span style={{ fontSize: 11, fontWeight: 400, color: "var(--ink-soft)" }}>{f ? fmtFechaHora(f) : "sin publicar"}</span>
+              {f && fmtFechaHora(f) ? (
+                <span style={{ fontSize: 11, fontWeight: 400, color: "var(--ink-soft)", lineHeight: 1.35, textAlign: "left" }}>
+                  <span style={{ display: "block", whiteSpace: "nowrap" }}>{fmtFechaHora(f).fecha}</span>
+                  <span style={{ display: "block", whiteSpace: "nowrap" }}>{fmtFechaHora(f).hora}</span>
+                </span>
+              ) : (
+                <span style={{ fontSize: 11, fontWeight: 400, color: "var(--ink-soft)" }}>sin publicar</span>
+              )}
             </button>
           );
         })}
