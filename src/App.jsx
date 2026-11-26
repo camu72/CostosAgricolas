@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, onValue, get, set as dbSet } from "firebase/database";
+import { getDatabase, ref, onValue, get, set as dbSet, query, orderByChild, equalTo } from "firebase/database";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "firebase/auth";
 import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./firebaseConfig.js";
 import DashboardProduccion from "./DashboardProduccion.jsx";
@@ -138,8 +138,16 @@ const AGRI_STYLES = `
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
-function ClienteDashboard({ slug, isAdmin }) {
-  const baseUrl = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "";
+function ClienteDashboard({ slug, user, rol }) {
+  // Puede actualizar datos el administrador o el dueño del perfil (las reglas de Firebase lo exigen igual)
+  const [esDueno, setEsDueno] = useState(false);
+  useEffect(() => {
+    setEsDueno(false);
+    if (!user || rol !== "publicador" || !cloudDb) return;
+    get(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/index/${slug}/owner`))
+      .then((s) => setEsDueno(s.val() === user.uid)).catch(() => setEsDueno(false));
+  }, [slug, user, rol]);
+  const isAdmin = rol === "admin" || esDueno;
 
   const DASHBOARDS = [
     { key: "cultivos",   label: "Cultivos" },
@@ -164,7 +172,7 @@ function ClienteDashboard({ slug, isAdmin }) {
   const navTo = (key) => {
     const u = new URLSearchParams(window.location.search);
     u.set("dashboard", key);
-    window.history.pushState({}, "", `?${u.toString()}`);
+    window.history.replaceState({}, "", `?${u.toString()}`);
     window.dispatchEvent(new Event("popstate"));
   };
 
@@ -193,9 +201,10 @@ function ClienteDashboard({ slug, isAdmin }) {
   const masterhead = (
     <div className="agri-masthead">
       <div>
-        {isAdmin && (
-          <a href={baseUrl} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--ink-soft)", textDecoration: "none", marginBottom: 6 }}>
-            <ArrowLeft size={12} /> Panel de clientes
+        {user && (rol === "admin" || rol === "publicador") && (
+          <a href={urlBase()} onClick={(e) => { e.preventDefault(); irA({}); }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--ink-soft)", textDecoration: "none", marginBottom: 6 }}>
+            <ArrowLeft size={12} /> {rol === "admin" ? "Volver al panel" : "Volver a mis perfiles"}
           </a>
         )}
         <div className="agri-title agri-serif">Costos Agrícolas - {clienteNombre || slug}</div>
@@ -230,7 +239,7 @@ function ClienteDashboard({ slug, isAdmin }) {
 }
 
 // ---------------------------------------------------------------------------
-// Login del administrador
+// Login (administrador o publicador)
 // ---------------------------------------------------------------------------
 function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -254,8 +263,8 @@ function LoginScreen() {
   return (
     <div className="agri-shell" style={{ maxWidth: 380, paddingTop: 70 }}>
       <div className="agri-card" style={{ padding: 28 }}>
-        <div className="agri-serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Panel de administrador</div>
-        <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 20 }}>Ingresá con tu cuenta para gestionar los clientes y sus datos.</div>
+        <div className="agri-serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Ingresar</div>
+        <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 20 }}>Ingresá con tu cuenta para ver tus perfiles y sus dashboards.</div>
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <input className="agri-input" type="email" placeholder="Email" value={email} autoComplete="username"
             onChange={(e) => setEmail(e.target.value)} required />
@@ -272,231 +281,371 @@ function LoginScreen() {
 }
 
 // ---------------------------------------------------------------------------
-// Panel de administrador: alta/baja de clientes y acceso a sus dashboards
+// Portal según el rol (etapa 2, 26/11/2026)
+//   - Publicador: "Mis perfiles" (clientes/index filtrado por owner = su UID).
+//   - Administrador: "Mis perfiles", "Publicadores" (con los perfiles de cada uno en ?publicador=<UID>)
+//     y "Sin publicador" (perfiles cuyo owner no es un publicador registrado ni el administrador).
+// Los perfiles se crean, renombran y eliminan desde Gorrión. En la App sólo se ven; el administrador
+// además puede reasignar el dueño, eliminar un perfil y dar de baja a un publicador (borra sus perfiles).
 // ---------------------------------------------------------------------------
-const slugify = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-  .replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
+const DASH_PORTAL = [
+  { key: "cultivos",   label: "Cultivos",   nodo: "cultivos" },
+  { key: "costos",     label: "Costos",     nodo: "costos" },
+  { key: "produccion", label: "Producción", nodo: "produccion" },
+];
+const NODOS_DATOS = DASH_PORTAL.map((d) => d.nodo);
 
-function AdminPanel() {
-  const [clients, setClients] = useState(null); // null = cargando
+const urlBase = () => (typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}` : "");
+const irA = (params) => {
+  const u = new URLSearchParams(params);
+  const qs = u.toString();
+  window.history.pushState({}, "", qs ? `?${qs}` : urlBase());
+  window.dispatchEvent(new Event("popstate"));
+};
+const fmtFechaHora = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  return d.toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+};
+const listaPerfiles = (val) => Object.entries(val || {})
+  .filter(([, v]) => v && typeof v === "object")
+  .map(([slug, v]) => ({ slug, nombre: v.nombre || slug, owner: v.owner || "", creadoEn: v.creadoEn || "", actualizado: v.actualizado || {} }))
+  .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+
+// Rol del usuario: lee admins/<uid> y publicadores/<uid> (cada uno puede leer el suyo)
+function useRol(user) {
+  const [rol, setRol] = useState(undefined); // undefined = resolviendo
+  useEffect(() => {
+    if (!user) { setRol(null); return; }
+    let vivo = true;
+    setRol(undefined);
+    (async () => {
+      const leer = async (p) => { try { return (await get(ref(cloudDb, p))).val(); } catch (e) { return null; } };
+      const esAdmin = await leer(`admins/${user.uid}`);
+      const pub = esAdmin ? null : await leer(`publicadores/${user.uid}`);
+      if (!vivo) return;
+      setRol(esAdmin ? "admin" : pub ? "publicador" : "ninguno");
+    })();
+    return () => { vivo = false; };
+  }, [user]);
+  return rol;
+}
+
+// Link público de un perfil: usa config/appUrl si está cargado; si no, la dirección actual
+function useAppUrl() {
+  const [appUrl, setAppUrl] = useState("");
+  useEffect(() => {
+    get(ref(cloudDb, "config/appUrl")).then((s) => setAppUrl(String(s.val() || "").trim())).catch(() => {});
+  }, []);
+  return appUrl || urlBase();
+}
+const linkPerfil = (appUrl, slug) => `${appUrl}${appUrl.includes("?") ? "&" : "?"}cliente=${slug}`;
+
+// Borra un perfil completo: cada nodo de datos por separado (una rama pesada no falla de una vez),
+// después lo que quede en clientes/<slug> y por último la ficha del índice.
+async function eliminarPerfilNube(slug) {
+  for (const nodo of NODOS_DATOS) await dbSet(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/${slug}/${nodo}`), null);
+  await dbSet(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/${slug}`), null);
+  await dbSet(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/index/${slug}`), null);
+}
+
+function TarjetaPerfil({ perfil, appUrl, esAdmin, publicadores, adminUid, onError }) {
+  const [copiado, setCopiado] = useState(false);
+  const [borrando, setBorrando] = useState(false);
+  const link = linkPerfil(appUrl, perfil.slug);
+
+  const copiar = () => {
+    if (navigator.clipboard) navigator.clipboard.writeText(link).catch(() => {});
+    setCopiado(true);
+    setTimeout(() => setCopiado(false), 1500);
+  };
+  const reasignar = async (owner) => {
+    if (owner === perfil.owner) return;
+    try { await dbSet(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/index/${perfil.slug}/owner`), owner); }
+    catch (e) { onError(`No se pudo cambiar el dueño de "${perfil.nombre}" (${e.code || e.message}).`); }
+  };
+  const eliminar = async () => {
+    if (!window.confirm(`¿Eliminar el perfil "${perfil.nombre}" con todos sus dashboards? El link deja de funcionar y no se puede deshacer.`)) return;
+    setBorrando(true);
+    try { await eliminarPerfilNube(perfil.slug); }
+    catch (e) { onError(`No se pudo eliminar "${perfil.nombre}" (${e.code || e.message}).`); setBorrando(false); }
+  };
+
+  const opcionesDueno = esAdmin ? [
+    { uid: adminUid, nombre: "Yo (administrador)" },
+    ...Object.entries(publicadores || {}).filter(([uid]) => uid !== adminUid).map(([uid, p]) => ({ uid, nombre: (p && p.nombre) || uid })),
+  ] : [];
+  const duenoConocido = opcionesDueno.some((o) => o.uid === perfil.owner);
+
+  return (
+    <div className="agri-card" style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, opacity: borrando ? 0.5 : 1 }}>
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>{perfil.nombre}</div>
+        <div style={{ fontSize: 12, color: "var(--ink-soft)", wordBreak: "break-all" }}>{link}</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
+        {DASH_PORTAL.map((d) => {
+          const f = perfil.actualizado[d.nodo];
+          return (
+            <button key={d.key} className="agri-btn agri-btn-outline" disabled={!f}
+              title={f ? `Abrir ${d.label}` : "Todavía no se publicó este dashboard"}
+              onClick={() => irA({ cliente: perfil.slug, dashboard: d.key })}
+              style={{ flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "8px 10px", opacity: f ? 1 : 0.55, cursor: f ? "pointer" : "default" }}>
+              <span>{d.label}</span>
+              <span style={{ fontSize: 11, fontWeight: 400, color: "var(--ink-soft)" }}>{f ? fmtFechaHora(f) : "sin publicar"}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <button className="agri-btn agri-btn-outline" onClick={copiar}>{copiado ? "¡Copiado!" : "Copiar link"}</button>
+        {esAdmin && (
+          <>
+            <select className="agri-select" value={duenoConocido ? perfil.owner : ""} onChange={(e) => reasignar(e.target.value)}
+              title="Dueño del perfil (el publicador que lo publica desde su Gorrión)" style={{ flex: "1 1 150px", minWidth: 0 }}>
+              {!duenoConocido && <option value="">Sin publicador</option>}
+              {opcionesDueno.map((o) => <option key={o.uid} value={o.uid}>Dueño: {o.nombre}</option>)}
+            </select>
+            <button className="agri-btn agri-btn-outline" style={{ color: "var(--rust)" }} disabled={borrando} onClick={eliminar} title="Eliminar perfil">
+              <Trash2 size={13} />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GrillaPerfiles({ perfiles, vacio, ...resto }) {
+  if (perfiles === null) return <div style={{ padding: 30, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>;
+  if (!perfiles.length) return <div className="agri-card" style={{ padding: 30, textAlign: "center", color: "var(--ink-soft)" }}>{vacio}</div>;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 14 }}>
+      {perfiles.map((p) => <TarjetaPerfil key={p.slug} perfil={p} {...resto} />)}
+    </div>
+  );
+}
+
+function SeccionPublicadores({ publicadores, perfiles, adminUid, onError }) {
+  const [uid, setUid] = useState("");
   const [nombre, setNombre] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState("");
-  const [copiedSlug, setCopiedSlug] = useState("");
-  const [editingSlug, setEditingSlug] = useState(null);
-  const [editValue, setEditValue] = useState("");
-  const [editError, setEditError] = useState("");
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [pendingAdd, setPendingAdd] = useState(null); // { slug, nombre } mientras confirmamos que se creó
-  const [pendingEdit, setPendingEdit] = useState(null); // { slug, nombre } mientras confirmamos que se guardó
+  const [email, setEmail] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [baja, setBaja] = useState(null);       // { uid, nombre, confirmacion }
+  const [progreso, setProgreso] = useState("");
 
-  const baseUrl = `${window.location.origin}${window.location.pathname}`;
-  const linkFor = (slug) => `${baseUrl}?cliente=${slug}`;
+  const lista = Object.entries(publicadores || {})
+    .map(([u, p]) => ({ uid: u, nombre: (p && p.nombre) || u, email: (p && p.email) || "", perfiles: (perfiles || []).filter((x) => x.owner === u) }))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+
+  const registrar = async (e) => {
+    e.preventDefault();
+    const u = uid.trim(), n = nombre.trim(), m = email.trim();
+    if (!u || !n) { onError("Completá UID y nombre."); return; }
+    if (/[.#$[\]/]/.test(u)) { onError("El UID no puede tener . # $ [ ] /"); return; }
+    if (publicadores && publicadores[u]) { onError("Ese UID ya está registrado como publicador."); return; }
+    setGuardando(true);
+    try { await dbSet(ref(cloudDb, `publicadores/${u}`), { nombre: n, email: m }); setUid(""); setNombre(""); setEmail(""); }
+    catch (err) { onError(`No se pudo registrar (${err.code || err.message}).`); }
+    finally { setGuardando(false); }
+  };
+
+  const darDeBaja = async () => {
+    const pub = lista.find((p) => p.uid === baja.uid);
+    if (!pub) return;
+    try {
+      for (let i = 0; i < pub.perfiles.length; i++) {
+        setProgreso(`Eliminando perfil ${i + 1} de ${pub.perfiles.length}: ${pub.perfiles[i].nombre}…`);
+        await eliminarPerfilNube(pub.perfiles[i].slug);
+      }
+      setProgreso("Eliminando el publicador…");
+      await dbSet(ref(cloudDb, `publicadores/${pub.uid}`), null);
+      setBaja(null);
+    } catch (err) {
+      onError(`La baja quedó incompleta (${err.code || err.message}). Volvé a intentarlo: sigue desde donde quedó.`);
+    } finally { setProgreso(""); }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+          <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Publicadores ({lista.length})</div>
+        </div>
+        {!lista.length && <div style={{ padding: 30, textAlign: "center", color: "var(--ink-soft)" }}>Todavía no hay publicadores registrados.</div>}
+        {lista.map((p) => (
+          <div key={p.uid} style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{p.nombre}{p.uid === adminUid ? " (vos)" : ""}</div>
+                <div style={{ fontSize: 12, color: "var(--ink-soft)", wordBreak: "break-all" }}>{p.email || "sin email"} · UID {p.uid}</div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="agri-btn agri-btn-outline" onClick={() => irA({ publicador: p.uid })}>
+                  Ver perfiles ({p.perfiles.length})
+                </button>
+                {p.uid !== adminUid && (
+                  <button className="agri-btn agri-btn-outline" style={{ color: "var(--rust)" }} onClick={() => setBaja({ uid: p.uid, nombre: p.nombre, confirmacion: "" })}>
+                    Dar de baja
+                  </button>
+                )}
+              </div>
+            </div>
+            {baja && baja.uid === p.uid && (
+              <div style={{ marginTop: 12, padding: 12, border: "1px solid var(--rust)", borderRadius: 6, background: "rgba(161,70,47,0.05)" }}>
+                <div style={{ fontSize: 13, marginBottom: 8 }}>
+                  Se van a eliminar <b>{p.perfiles.length} {p.perfiles.length === 1 ? "perfil" : "perfiles"}</b> con todos sus dashboards
+                  {p.perfiles.length ? ` (${p.perfiles.map((x) => x.nombre).join(", ")})` : ""} y el registro del publicador. Los links dejan de funcionar y no se puede deshacer.
+                  <br />Después inhabilitá su usuario en Firebase → Authentication.
+                </div>
+                <div style={{ fontSize: 13, marginBottom: 6 }}>Para confirmar, escribí <b>{p.nombre}</b>:</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <input className="agri-input" style={{ flex: "1 1 200px" }} value={baja.confirmacion} disabled={!!progreso}
+                    onChange={(e) => setBaja({ ...baja, confirmacion: e.target.value })} autoFocus />
+                  <button className="agri-btn" style={{ background: "var(--rust)", borderColor: "var(--rust)" }}
+                    disabled={baja.confirmacion.trim() !== p.nombre.trim() || !!progreso} onClick={darDeBaja}>
+                    Dar de baja
+                  </button>
+                  <button className="agri-btn agri-btn-outline" disabled={!!progreso} onClick={() => setBaja(null)}>Cancelar</button>
+                </div>
+                {progreso && <div style={{ fontSize: 12, color: "var(--ink-soft)", marginTop: 6 }}>{progreso}</div>}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="agri-card" style={{ padding: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Registrar publicador</div>
+        <div style={{ fontSize: 12, color: "var(--ink-soft)", marginBottom: 10 }}>
+          Primero creá el usuario en Firebase → Authentication → Agregar usuario, y copiá su UID acá.
+        </div>
+        <form onSubmit={registrar} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input className="agri-input" style={{ flex: "2 1 220px" }} placeholder="UID" value={uid} onChange={(e) => setUid(e.target.value)} />
+          <input className="agri-input" style={{ flex: "1 1 160px" }} placeholder="Nombre del cliente" value={nombre} onChange={(e) => setNombre(e.target.value)} />
+          <input className="agri-input" style={{ flex: "1 1 180px" }} type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <button className="agri-btn" type="submit" disabled={guardando}><Plus size={14} /> Registrar</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function Portal({ user, rol }) {
+  const esAdmin = rol === "admin";
+  const appUrl = useAppUrl();
+  const [perfiles, setPerfiles] = useState(null);
+  const [publicadores, setPublicadores] = useState(esAdmin ? null : {});
+  const [error, setError] = useState("");
+  const [params, setParams] = useState(() => new URLSearchParams(window.location.search));
 
   useEffect(() => {
-    const dbRef = ref(cloudDb, "clientes/index");
-    const unsub = onValue(dbRef, (snap) => {
-      const val = snap.val() || {};
-      const list = Object.entries(val).map(([slug, v]) => ({ slug, nombre: (v && v.nombre) || slug, creadoEn: v && v.creadoEn }));
-      list.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
-      setClients(list);
-    });
-    return unsub;
+    const onPop = () => setParams(new URLSearchParams(window.location.search));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  // Confirmación real vía suscripción en vivo (única fuente de verdad).
-  // La promesa de dbSet no es confiable en este entorno — la ignoramos y
-  // miramos directamente si el dato aparece en la lista.
+  // Perfiles: el administrador lee todo el índice; el publicador sólo los suyos (consulta por owner)
   useEffect(() => {
-    if (!pendingAdd || !clients) return;
-    if (clients.some((c) => c.slug === pendingAdd.slug && c.nombre === pendingAdd.nombre)) {
-      // Éxito confirmado
-      setNombre(""); setAddError(""); setAdding(false); setPendingAdd(null);
-      return;
-    }
-    // Si ya pasaron 8 segundos y no llegó, recién entonces avisamos error real
-    const t = setTimeout(() => {
-      setPendingAdd((cur) => {
-        if (cur && cur.slug === pendingAdd.slug) {
-          setAddError("No se pudo crear el cliente. Revisá tu conexión e intentá de nuevo.");
-          setAdding(false);
-          return null;
-        }
-        return cur;
-      });
-    }, 8000);
-    return () => clearTimeout(t);
-  }, [clients, pendingAdd?.slug]); // eslint-disable-line react-hooks/exhaustive-deps
+    const idx = ref(cloudDb, `${CLOUD_CLIENTS_BASE}/index`);
+    const q = esAdmin ? idx : query(idx, orderByChild("owner"), equalTo(user.uid));
+    return onValue(q, (s) => setPerfiles(listaPerfiles(s.val())),
+      (e) => { setPerfiles([]); setError(`No se pudieron leer los perfiles (${e.code || e.message}).`); });
+  }, [esAdmin, user.uid]);
 
   useEffect(() => {
-    if (!pendingEdit || !clients) return;
-    // Para migración de slug, chequeamos el nuevo; para edición de nombre, chequeamos el nombre
-    const confirmado = clients.some((c) => c.slug === pendingEdit.slug && c.nombre === pendingEdit.nombre);
-    const viejoDesaparecio = pendingEdit.oldSlug !== pendingEdit.slug
-      ? !clients.some((c) => c.slug === pendingEdit.oldSlug)
-      : true;
-    if (confirmado && viejoDesaparecio) {
-      setEditingSlug(null); setEditValue(""); setEditError(""); setSavingEdit(false); setPendingEdit(null);
-      return;
-    }
-    const t = setTimeout(() => {
-      setPendingEdit((cur) => {
-        if (cur) {
-          setEditError("No se pudo guardar. Intentá de nuevo.");
-          setSavingEdit(false);
-          return null;
-        }
-        return cur;
-      });
-    }, 8000);
-    return () => clearTimeout(t);
-  }, [clients, pendingEdit?.slug]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!esAdmin) return;
+    return onValue(ref(cloudDb, "publicadores"), (s) => setPublicadores(s.val() || {}),
+      (e) => { setPublicadores({}); setError(`No se pudieron leer los publicadores (${e.code || e.message}).`); });
+  }, [esAdmin]);
 
-  const nombreDuplicado = (nombreNuevo, slugAEexcluir) => {
-    const norm = nombreNuevo.trim().toLowerCase();
-    return (clients || []).some((c) => c.slug !== slugAEexcluir && c.nombre.trim().toLowerCase() === norm);
-  };
+  const vistaPub = params.get("publicador");
+  const vista = !esAdmin ? "mios" : vistaPub ? "publicador" : (params.get("vista") || "mios");
+  const mios = perfiles && perfiles.filter((p) => p.owner === user.uid);
+  const sinPublicador = perfiles && publicadores
+    ? perfiles.filter((p) => p.owner !== user.uid && !publicadores[p.owner]) : null;
+  const delPublicador = perfiles && vistaPub ? perfiles.filter((p) => p.owner === vistaPub) : null;
+  const pubActual = vistaPub && publicadores ? publicadores[vistaPub] : null;
 
-  const addClient = async (e) => {
-    e.preventDefault();
-    setAddError("");
-    const trimmed = nombre.trim();
-    const base = slugify(trimmed);
-    if (!base) { setAddError("Ingresá un nombre válido."); return; }
-    if (nombreDuplicado(trimmed, null)) { setAddError("Ya existe un cliente con ese nombre."); return; }
-    const existingSlugs = new Set((clients || []).map((c) => c.slug));
-    let slug = base, n = 2;
-    while (existingSlugs.has(slug)) { slug = `${base}-${n}`; n++; }
-    setAdding(true);
-    setPendingAdd({ slug, nombre: trimmed });
-    // Disparamos la escritura sin await — la suscripción onValue va a confirmar
-    // el resultado real. Si en 8 segundos no llegó, recién ahí mostramos error.
-    dbSet(ref(cloudDb, `clientes/index/${slug}`), { nombre: trimmed, creadoEn: new Date().toISOString() });
-  };
-
-  const startEdit = (c) => { setEditingSlug(c.slug); setEditValue(c.nombre); setEditError(""); };
-  const cancelEdit = () => { setEditingSlug(null); setEditValue(""); setEditError(""); };
-
-  const saveEdit = async (slug) => {
-    const trimmed = editValue.trim();
-    if (!trimmed) { setEditError("El nombre no puede quedar vacío."); return; }
-    if (nombreDuplicado(trimmed, slug)) { setEditError("Ya existe un cliente con ese nombre."); return; }
-    const newBase = slugify(trimmed);
-    if (!newBase) { setEditError("Ingresá un nombre válido."); return; }
-    const otherSlugs = new Set((clients || []).map((c) => c.slug).filter((s) => s !== slug));
-    let newSlug = newBase, n = 2;
-    while (otherSlugs.has(newSlug)) { newSlug = `${newBase}-${n}`; n++; }
-
-    if (newSlug !== slug) {
-      const ok = window.confirm(
-        "Ese nombre genera un link nuevo para este cliente. El link actual va a dejar de funcionar " +
-        "(sus datos se migran al nuevo link). ¿Continuar?"
-      );
-      if (!ok) return;
-    }
-
-    setSavingEdit(true);
-    setPendingEdit({ oldSlug: slug, slug: newSlug, nombre: trimmed });
-
-    if (newSlug !== slug) {
-      // Migración: leer datos del viejo, escribir en el nuevo, borrar el viejo
-      const oldClient = (clients || []).find((c) => c.slug === slug);
-      const snap = await get(ref(cloudDb, `clientes/${slug}/costos`));
-      if (snap.exists()) {
-        dbSet(ref(cloudDb, `clientes/${newSlug}/costos`), snap.val());
-      }
-      dbSet(ref(cloudDb, `clientes/index/${newSlug}`), {
-        nombre: trimmed,
-        creadoEn: (oldClient && oldClient.creadoEn) || new Date().toISOString(),
-      });
-      dbSet(ref(cloudDb, `clientes/index/${slug}`), null);
-      dbSet(ref(cloudDb, `clientes/${slug}`), null);
-    } else {
-      dbSet(ref(cloudDb, `clientes/index/${slug}/nombre`), trimmed);
-    }
-    // La suscripción onValue confirma el resultado real
-  };
-
-  const deleteClient = async (slug, nombreCliente) => {
-    if (!window.confirm(`¿Eliminar a "${nombreCliente}" y todos sus datos? Esta acción no se puede deshacer.`)) return;
-    try {
-      await dbSet(ref(cloudDb, `clientes/index/${slug}`), null);
-      await dbSet(ref(cloudDb, `clientes/${slug}`), null);
-    } catch (err) { /* silencioso: el listado se refresca solo si falla parcialmente */ }
-  };
-
-  const copyLink = (slug) => {
-    const link = linkFor(slug);
-    if (navigator.clipboard) navigator.clipboard.writeText(link).catch(() => {});
-    setCopiedSlug(slug);
-    setTimeout(() => setCopiedSlug(""), 1500);
-  };
+  const props = { appUrl, esAdmin, publicadores, adminUid: user.uid, onError: setError };
+  const tabs = [
+    { key: "mios", label: `Mis perfiles${mios ? ` (${mios.length})` : ""}` },
+    { key: "publicadores", label: `Publicadores${publicadores ? ` (${Object.keys(publicadores).length})` : ""}` },
+    ...(sinPublicador && sinPublicador.length ? [{ key: "sin", label: `Sin publicador (${sinPublicador.length})` }] : []),
+  ];
 
   return (
     <div className="agri-shell">
       <div className="agri-masthead">
         <div>
-          <div className="agri-title agri-serif">Panel de administrador</div>
-          <div className="agri-sub">Gestioná tus clientes y el acceso a sus datos.</div>
+          <div className="agri-title agri-serif">{esAdmin ? "Panel de administrador" : "Mis perfiles"}</div>
+          <div className="agri-sub">{user.email}{esAdmin ? " · administrador" : " · publicador"}</div>
+          {esAdmin && (
+            <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+              {tabs.map((t) => (
+                <button key={t.key} className="agri-chip"
+                  data-active={vista === t.key || (vista === "publicador" && t.key === "publicadores")}
+                  onClick={() => irA(t.key === "mios" ? {} : { vista: t.key })}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <button className="agri-btn agri-btn-outline" onClick={() => signOut(cloudAuth)}>
           <LogOut size={14} /> Cerrar sesión
         </button>
       </div>
 
-      <div className="agri-card" style={{ padding: 16, marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Agregar cliente</div>
-        <form onSubmit={addClient} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <input className="agri-input" style={{ flex: "1 1 220px" }} placeholder="Nombre del cliente (ej. Cliente1)"
-            value={nombre} onChange={(e) => setNombre(e.target.value)} />
-          <button className="agri-btn" disabled={adding} type="submit"><Plus size={14} /> Agregar</button>
-        </form>
-        {addError && <div style={{ color: "var(--rust)", fontSize: 13, marginTop: 6 }}>{addError}</div>}
-      </div>
-
-      <div className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
-          <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Clientes ({clients ? clients.length : 0})</div>
+      {error && (
+        <div className="agri-card" style={{ padding: "10px 14px", marginBottom: 14, borderColor: "var(--rust)", color: "var(--rust)", fontSize: 13, display: "flex", justifyContent: "space-between", gap: 10 }}>
+          <span>{error}</span>
+          <button className="agri-btn agri-btn-outline" style={{ padding: "2px 8px" }} onClick={() => setError("")}><X size={12} /></button>
         </div>
-        {clients === null ? (
-          <div style={{ padding: 30, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
-        ) : clients.length === 0 ? (
-          <div style={{ padding: 30, textAlign: "center", color: "var(--ink-soft)" }}>Todavía no agregaste ningún cliente.</div>
-        ) : (
-          clients.map((c) => (
-            <div key={c.slug} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
-              {editingSlug === c.slug ? (
-                <div style={{ flex: "1 1 220px" }}>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <input className="agri-input" style={{ flex: "1 1 180px" }} value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)} autoFocus
-                      onKeyDown={(e) => { if (e.key === "Enter") saveEdit(c.slug); if (e.key === "Escape") cancelEdit(); }} />
-                    <button className="agri-btn" disabled={savingEdit} onClick={() => saveEdit(c.slug)}>{savingEdit ? "Guardando…" : "Guardar"}</button>
-                    <button className="agri-btn agri-btn-outline" onClick={cancelEdit}>Cancelar</button>
-                  </div>
-                  {editError && <div style={{ color: "var(--rust)", fontSize: 12, marginTop: 4 }}>{editError}</div>}
-                </div>
-              ) : (
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{c.nombre}</div>
-                  <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{linkFor(c.slug)}</div>
-                </div>
-              )}
-              {editingSlug !== c.slug && (
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button className="agri-btn agri-btn-outline" onClick={() => copyLink(c.slug)}>
-                    {copiedSlug === c.slug ? "¡Copiado!" : "Copiar link"}
-                  </button>
-                  <a className="agri-btn agri-btn-outline" href={linkFor(c.slug)} target="_blank" rel="noreferrer">Abrir</a>
-                  <button className="agri-btn agri-btn-outline" onClick={() => startEdit(c)}>Editar</button>
-                  <button className="agri-btn agri-btn-outline" style={{ color: "var(--rust)" }} onClick={() => deleteClient(c.slug, c.nombre)}>
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              )}
+      )}
+
+      {vista === "mios" && (
+        <GrillaPerfiles perfiles={mios} vacio="Todavía no publicaste ningún perfil. Los perfiles se crean y publican desde Gorrión." {...props} />
+      )}
+      {vista === "publicadores" && (
+        publicadores === null || perfiles === null
+          ? <div style={{ padding: 30, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>
+          : <SeccionPublicadores publicadores={publicadores} perfiles={perfiles} adminUid={user.uid} onError={setError} />
+      )}
+      {vista === "publicador" && (
+        <>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+            <button className="agri-btn agri-btn-outline" onClick={() => irA({ vista: "publicadores" })}><ArrowLeft size={13} /> Publicadores</button>
+            <div className="agri-serif" style={{ fontSize: 16 }}>
+              {pubActual ? pubActual.nombre : vistaPub === user.uid ? "Mis perfiles" : "Publicador no registrado"}
             </div>
-          ))
-        )}
+            {pubActual && pubActual.email && <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>{pubActual.email}</span>}
+          </div>
+          <GrillaPerfiles perfiles={delPublicador} vacio="Este publicador todavía no publicó ningún perfil." {...props} />
+        </>
+      )}
+      {vista === "sin" && (
+        <>
+          <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 12 }}>
+            Perfiles cuyo dueño no es un publicador registrado. Asignales un dueño o eliminalos.
+          </div>
+          <GrillaPerfiles perfiles={sinPublicador} vacio="No hay perfiles sin publicador." {...props} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function SinRol() {
+  return (
+    <div className="agri-shell" style={{ maxWidth: 460, paddingTop: 70 }}>
+      <div className="agri-card" style={{ padding: 28 }}>
+        <div className="agri-serif" style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>Usuario sin acceso</div>
+        <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 18 }}>
+          Tu usuario no está registrado como publicador. Pedile al administrador que te dé de alta.
+        </div>
+        <button className="agri-btn agri-btn-outline" onClick={() => signOut(cloudAuth)}><LogOut size={14} /> Cerrar sesión</button>
       </div>
     </div>
   );
@@ -507,9 +656,15 @@ function AdminPanel() {
 // ---------------------------------------------------------------------------
 export default function App() {
   const [authUser, setAuthUser] = useState(undefined); // undefined = resolviendo, null = sin sesión
-  const clienteSlug = useMemo(() => {
-    if (typeof window === "undefined") return null;
-    return new URLSearchParams(window.location.search).get("cliente");
+  const rol = useRol(authUser);
+  const [clienteSlug, setClienteSlug] = useState(() =>
+    typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("cliente"));
+
+  // La navegación interna (portal ↔ dashboard) usa pushState + popstate, sin recargar
+  useEffect(() => {
+    const onPop = () => setClienteSlug(new URLSearchParams(window.location.search).get("cliente"));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   // Fuente tipográfica (una sola vez, para toda la app)
@@ -521,7 +676,7 @@ export default function App() {
     return () => { try { document.head.removeChild(link); } catch (e) {} };
   }, []);
 
-  // Sesión de administrador (persiste sola entre recargas gracias a Firebase Auth)
+  // Sesión (persiste sola entre recargas gracias a Firebase Auth)
   useEffect(() => {
     if (!CLOUD_SYNC_ENABLED || !cloudAuth) { setAuthUser(null); return; }
     const unsub = onAuthStateChanged(cloudAuth, (u) => setAuthUser(u));
@@ -532,15 +687,20 @@ export default function App() {
   if (!CLOUD_SYNC_ENABLED) {
     content = (
       <div className="agri-shell" style={{ paddingTop: 60, textAlign: "center", color: "var(--ink-soft)" }}>
-        El modo multi-cliente necesita Firebase configurado en <code>firebaseConfig.js</code>.
+        La App necesita Firebase configurado en <code>firebaseConfig.js</code>.
       </div>
     );
-  } else if (authUser === undefined) {
+  } else if (authUser === undefined || (authUser && rol === undefined)) {
     content = <div style={{ padding: 60, textAlign: "center", color: "var(--ink-soft)" }}>Cargando…</div>;
-  } else if (!clienteSlug) {
-    content = authUser ? <AdminPanel /> : <LoginScreen />;
+  } else if (clienteSlug) {
+    // Link de un perfil: público. Con sesión iniciada se muestra "Volver" al portal.
+    content = <ClienteDashboard slug={clienteSlug} user={authUser} rol={rol} />;
+  } else if (!authUser) {
+    content = <LoginScreen />;
+  } else if (rol === "admin" || rol === "publicador") {
+    content = <Portal user={authUser} rol={rol} />;
   } else {
-    content = <ClienteDashboard slug={clienteSlug} isAdmin={!!authUser} />;
+    content = <SinRol />;
   }
 
   return (
