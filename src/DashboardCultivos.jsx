@@ -41,7 +41,8 @@ const STORAGE_KEY = "cultivos-gorrion-v1";   // distinta de la del dashboard ant
 const SIN_CULTIVO = "__SIN__";
 
 const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B", GARBANZO: "#8A5A3B", TRIGO: "#B8842E", GIRASOL: "#A1462F" };
-const FALLBACK_COLORS = ["#5B7C4B", "#C68F41", "#35606B", "#8A5A3B", "#7C8A4B", "#A1462F"];
+// Colores para cultivos sin color propio: distintos de los fijos de arriba, así dos cultivos no comparten color
+const FALLBACK_COLORS = ["#7C8A4B", "#6E5A8A", "#3F7F6E", "#B26A8E", "#8C7A3A", "#4F6F8F"];
 const cultivoColor = (name, i) => CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 const GRIS_HABILITADO = "#B9AE94";
 

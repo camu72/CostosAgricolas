@@ -46,8 +46,9 @@ const REQUERIDAS = ["Cultivo", "Fecha", "Campo", "TipoDep", "ODT", "TipoDepContr
 const STORAGE_KEY_PROD = "produccion-gorrion-v1";   // distinta de la del dashboard anterior: no lee su caché
 const PAGE_SIZE = 30;
 
-const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B", GARBANZO: "#8A5A3B" };
-const FALLBACK_COLORS = ["#5B7C4B","#C68F41","#35606B","#8A5A3B","#7C8A4B","#A1462F"];
+const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B", GARBANZO: "#8A5A3B", TRIGO: "#B8842E", GIRASOL: "#A1462F" };
+// Colores para cultivos sin color propio: distintos de los fijos de arriba, así dos cultivos no comparten color
+const FALLBACK_COLORS = ["#7C8A4B", "#6E5A8A", "#3F7F6E", "#B26A8E", "#8C7A3A", "#4F6F8F"];
 const cultivoColor = (name, i) => CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 
 // Encabezados: se comparan sin espacios, puntos ni acentos, sin distinguir mayúsculas; ° y º valen lo mismo (N° CP / Nº CP)
@@ -335,17 +336,17 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
 
     // Depósitos: filas cuyo TipoDep NO es cultivo → acumulamos los kilos del peso elegido
     const deposRows = filtered.filter((r) => !esCultivo(r["TipoDep"]));
-    let stockPlanta = 0, stockSilo = 0, stockPermanente = 0;
+    let stockPlanta = 0, stockSilo = 0, stockPermanente = 0, haySilo = false;
     deposRows.forEach((r) => {
       const v = r.kg / 1000;
       const t = str(r["TipoDep"]).toLowerCase();
       if (t === "planta de acopio") stockPlanta += v;
-      else if (t === "temporal") stockSilo += v;
+      else if (t === "temporal") { stockSilo += v; haySilo = true; }
       else if (t === "permanente") stockPermanente += v;
     });
 
     const viajeRows = filtered.filter((r) => r["Dominio"] && r.kg > 0);
-    return { tnCosechadas, stockPlanta, stockSilo, stockPermanente, viajes: viajeRows.length };
+    return { tnCosechadas, stockPlanta, stockSilo, haySilo, stockPermanente, viajes: viajeRows.length };
   }, [filtered]);
 
   // ---------- Gráficos ----------
@@ -381,9 +382,20 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
         const c = r["Cultivo"] || "(sin cultivo)";
         bucket[c] = (bucket[c] || 0) + Math.abs(r.kg) / 1000;
       });
-    return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([ym, bucket]) => ({
-      ym, label: monthLabel(ym), ...bucket,
-    }));
+    if (!m.size) return [];
+    // Meses completos entre el primero y el último con cosecha: los meses sin cosecha valen 0,
+    // así la línea baja a cero en vez de unir meses que no son consecutivos.
+    const meses = Array.from(m.keys()).sort();
+    const sumar = (ym) => { const [y, mo] = ym.split("-").map(Number); return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, "0")}`; };
+    const out = [];
+    for (let ym = meses[0]; ym <= meses[meses.length - 1]; ym = sumar(ym)) {
+      const bucket = m.get(ym) || {};
+      const fila = { ym, label: monthLabel(ym) };
+      cultList.forEach((c) => { fila[c] = bucket[c] || 0; });
+      Object.keys(bucket).forEach((c) => { if (!(c in fila)) fila[c] = bucket[c]; });
+      out.push(fila);
+    }
+    return out;
   }, [filtered, cultivos]);
 
   const stockPorDeposito = useMemo(() => {
@@ -713,10 +725,13 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
               <div className="agri-kpi-label">Stock en planta</div>
               <div className="agri-kpi-value">{fmtNum(kpis.stockPlanta, 1)} tn</div>
             </div>
-            <div className="agri-card" style={{ padding: 14 }}>
-              <div className="agri-kpi-label">Stock en silo bolsa</div>
-              <div className="agri-kpi-value">{fmtNum(kpis.stockSilo, 1)} tn</div>
-            </div>
+            {/* Sólo si hay silos bolsa (TipoDep = Temporal) en los datos filtrados; con silos y stock neto 0, se muestra */}
+            {kpis.haySilo && (
+              <div className="agri-card" style={{ padding: 14 }}>
+                <div className="agri-kpi-label">Stock en silo bolsa</div>
+                <div className="agri-kpi-value">{fmtNum(kpis.stockSilo, 1)} tn</div>
+              </div>
+            )}
             {kpis.stockPermanente !== 0 && (
               <div className="agri-card" style={{ padding: 14 }}>
                 <div className="agri-kpi-label">Stock en otros dep.</div>
@@ -768,7 +783,7 @@ export default function DashboardProduccion({ slug, isAdmin, cloudDb, onLogout, 
                   <Tooltip content={<ChartTooltip unit="tn" />} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   {cultivos.map((c, i) => (
-                    <Line key={c} type="monotone" dataKey={c} name={c} stroke={cultivoColor(c, i)} strokeWidth={2} dot={false} />
+                    <Line key={c} type="linear" dataKey={c} name={c} stroke={cultivoColor(c, i)} strokeWidth={2} dot={evolucionMensual.length <= 18 ? { r: 2.5 } : false} />
                   ))}
                 </LineChart>
               </ResponsiveContainer>

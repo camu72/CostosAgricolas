@@ -61,8 +61,9 @@ const rowsFromPayload = (payload) => payload.rows.map((arr) => {
 const esHabilitacion = (c) => normKey(c) === "habilitacion";
 const GRIS_HABILITACION = "#B9AE94";
 
-const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B" };
-const FALLBACK_COLORS = ["#5B7C4B", "#C68F41", "#35606B", "#8A5A3B", "#7C8A4B", "#A1462F"];
+const CULTIVO_COLORS = { SOJA: "#5B7C4B", MAIZ: "#C68F41", POROTO: "#35606B", GARBANZO: "#8A5A3B", TRIGO: "#B8842E", GIRASOL: "#A1462F" };
+// Colores para cultivos sin color propio: distintos de los fijos de arriba, así dos cultivos no comparten color
+const FALLBACK_COLORS = ["#7C8A4B", "#6E5A8A", "#3F7F6E", "#B26A8E", "#8C7A3A", "#4F6F8F"];
 const cultivoColor = (name, i) => esHabilitacion(name) ? GRIS_HABILITACION : (CULTIVO_COLORS[String(name).toUpperCase()] || FALLBACK_COLORS[i % FALLBACK_COLORS.length]);
 // Orden de cultivos: alfabético, con Habilitación siempre al final
 const ordenCultivos = (a, b) => (esHabilitacion(a) - esHabilitacion(b)) || String(a).localeCompare(String(b), "es");
@@ -891,7 +892,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
   }, [loteAgg, loteSort]);
   const maxCostoHa = Math.max(1, ...loteAgg.map((e) => e.costoHa));
   const topLotesPorGasto = useMemo(() => [...loteAgg].filter((e) => e.ha > 0).sort((a, b) => b.costoHa - a.costoHa).slice(0, 12).map((e) => ({
-    name: `${e.campo} · L${e.lote} · ${e.cultivo}`,
+    name: `${e.campo} · ${e.lote} · ${e.cultivo}`,
     value: e.costoHa, campo: e.campo, lote: e.lote, cultivo: e.cultivo, variedad: e.variedad, ha: e.ha,
   })), [loteAgg]);
 
