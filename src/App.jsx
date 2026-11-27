@@ -166,7 +166,7 @@ function ClienteDashboard({ slug, user, rol }) {
 
   const DASHBOARDS = [
     { key: "cultivos",   label: "Cultivos" },
-    { key: "costos",     label: "Costos" },
+    { key: "costos",     label: "Labores y Costos" },
     { key: "produccion", label: "Producción" },
   ];
 
@@ -313,7 +313,7 @@ function LoginScreen() {
 // ---------------------------------------------------------------------------
 const DASH_PORTAL = [
   { key: "cultivos",   label: "Cultivos",   nodo: "cultivos" },
-  { key: "costos",     label: "Costos",     nodo: "costos" },
+  { key: "costos",     label: "Labores y Costos", nodo: "costos" },
   { key: "produccion", label: "Producción", nodo: "produccion" },
 ];
 const NODOS_DATOS = DASH_PORTAL.map((d) => d.nodo);

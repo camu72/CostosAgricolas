@@ -125,20 +125,24 @@ const monthLabel = (ym) => {
 
 // Renderers de etiquetas dentro de las barras: se ocultan solos si no entra el
 // texto, para que nunca sobresalgan del área de la barra.
+// Etiquetas dentro de las barras. "formato" permite usarlas para hectáreas (vista Labores).
 const VerticalBarLabel = (props) => {
-  const { x, y, width, height, value } = props;
+  const { x, y, width, height, value, formato = fmtUSD2 } = props;
   if (!value || height < 16) return null;
+  const text = formato(value);
+  if (width < text.length * 6.2 + 4) return null;
   return (
     <text x={x + width / 2} y={y + height / 2} textAnchor="middle" dominantBaseline="middle" fill="#fff" fontSize={11} fontWeight={700}>
-      {fmtUSD2(value)}
+      {text}
     </text>
   );
 };
+const fmtHa = (v) => `${fmtNum(v, v < 10 ? 1 : 0)} ha`;
 
 const HorizontalBarLabel = (props) => {
-  const { x, y, width, height, value } = props;
+  const { x, y, width, height, value, formato = fmtUSD2 } = props;
   if (!value) return null;
-  const text = fmtUSD2(value);
+  const text = formato(value);
   if (width < text.length * 6.4 + 10) return null;
   return (
     <text x={x + width - 6} y={y + height / 2} textAnchor="end" dominantBaseline="middle" fill="#fff" fontSize={10} fontWeight={700}>
@@ -290,6 +294,114 @@ function costoPorRubroLote(rows) {
     .sort((a, b) => (TIPODET_ORDER_LOTE[a.tipoDet] ?? 2) - (TIPODET_ORDER_LOTE[b.tipoDet] ?? 2) || b.value - a.value);
 }
 
+// ---------------------------------------------------------------------------
+// Vista "Labores" (27/11/2026): seguimiento de labores sin precios.
+// Reglas acordadas con el usuario:
+//   - la labor es "Origen"; cada OTA es una labor; toda labor (propia o contratada) tiene su fila de servicio;
+//   - hectáreas trabajadas = Cant.Afect de la fila de SERVICIO, una vez por OTA + línea de cultivo
+//     (si una OTA tiene dos servicios en la misma línea, las ha no se duplican);
+//   - contratista = Concepto de la fila de servicio;
+//   - servicios en otra unidad (U.Serv. = Hs, etc.) no suman hectáreas: se informan aparte.
+// ---------------------------------------------------------------------------
+const esServicio = (r) => r["Tipo Det."] === "SERVICIOS";
+const esInsumo = (r) => r["Tipo Det."] === "INSUMOS";
+const claveLinea = (r) => `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}|${r["Sup.Cultivo"]}`;
+
+// Trabajo (ha u otra unidad) de cada OTA + línea, tomado una sola vez de su fila de servicio
+function trabajosLabores(rows) {
+  const m = new Map();
+  rows.forEach((r) => {
+    if (!esServicio(r) || !(r[COL_HAS_LABOR] > 0)) return;
+    const k = `${r["OTA"]}|${claveLinea(r)}`;
+    if (m.has(k)) return;
+    m.set(k, { ota: r["OTA"], labor: r["Origen"] || "(sin labor)", cultivo: r["Cultivo"], fecha: r["Fecha"], contratista: r["Concepto"] || "(sin contratista)",
+      lote: `${r["Campo"]}|${r["Lote"]}`, cant: r[COL_HAS_LABOR], unidad: unidadLabor(r) });
+  });
+  return Array.from(m.values());
+}
+function resumenLabores(rows) {
+  const otas = new Set(), insumos = new Set(), contratistas = new Set();
+  let ultima = null;
+  rows.forEach((r) => {
+    if (r["OTA"]) otas.add(r["OTA"]);
+    if (esInsumo(r) && r["Concepto"]) insumos.add(r["Concepto"]);
+    if (esServicio(r) && r["Concepto"]) contratistas.add(r["Concepto"]);
+    if (r["Fecha"] && (!ultima || r["Fecha"] > ultima.fecha)) ultima = { fecha: r["Fecha"], labor: r["Origen"] };
+  });
+  let ha = 0; const otras = {};
+  trabajosLabores(rows).forEach((t) => { if (t.unidad === "ha") ha += t.cant; else otras[t.unidad] = (otras[t.unidad] || 0) + t.cant; });
+  return { labores: otas.size, ha, otras, insumos: insumos.size, contratistas: contratistas.size, ultima };
+}
+const textoOtras = (otras) => Object.entries(otras || {}).map(([u, v]) => `${fmtNum(v, 1)} ${u}`).join(" · ");
+
+// Hectáreas trabajadas por labor, desglosadas por cultivo (para el gráfico apilado)
+function haPorLabor(rows, cultivosOrden) {
+  const m = new Map();
+  trabajosLabores(rows).forEach((t) => {
+    if (t.unidad !== "ha") return;
+    if (!m.has(t.labor)) m.set(t.labor, { name: t.labor, _total: 0, _otas: new Set() });
+    const e = m.get(t.labor);
+    e[t.cultivo] = (e[t.cultivo] || 0) + t.cant; e._total += t.cant; e._otas.add(t.ota);
+  });
+  return Array.from(m.values()).map((e) => {
+    const o = { name: e.name, _total: e._total, labores: e._otas.size };
+    (cultivosOrden || []).forEach((c) => { o[c] = e[c] || 0; });
+    return o;
+  }).sort((a, b) => b._total - a._total);
+}
+// Hectáreas trabajadas por mes
+function haPorMes(rows) {
+  const m = new Map();
+  trabajosLabores(rows).forEach((t) => {
+    if (t.unidad !== "ha" || !t.fecha) return;
+    const ym = t.fecha.slice(0, 7);
+    m.set(ym, (m.get(ym) || 0) + t.cant);
+  });
+  const meses = Array.from(m.keys()).sort();
+  if (!meses.length) return [];
+  const sig = (ym) => { const [y, mo] = ym.split("-").map(Number); return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, "0")}`; };
+  const out = [];
+  for (let ym = meses[0]; ym <= meses[meses.length - 1]; ym = sig(ym)) out.push({ ym, name: monthLabel(ym), ha: m.get(ym) || 0 });
+  return out;
+}
+// Resumen por contratista
+function resumenContratistas(rows) {
+  const m = new Map();
+  trabajosLabores(rows).forEach((t) => {
+    if (!m.has(t.contratista)) m.set(t.contratista, { contratista: t.contratista, otas: new Set(), lotes: new Set(), labores: new Set(), ha: 0, otras: {}, ultima: "" });
+    const e = m.get(t.contratista);
+    e.otas.add(t.ota); e.lotes.add(t.lote); e.labores.add(t.labor);
+    if (t.unidad === "ha") e.ha += t.cant; else e.otras[t.unidad] = (e.otras[t.unidad] || 0) + t.cant;
+    if (t.fecha && t.fecha > e.ultima) e.ultima = t.fecha;
+  });
+  return Array.from(m.values()).map((e) => ({
+    contratista: e.contratista, labores: e.otas.size, lotes: e.lotes.size, tiposLabor: Array.from(e.labores).sort().join(", "),
+    ha: e.ha, otras: e.otras, ultima: e.ultima,
+  })).sort((a, b) => b.ha - a.ha);
+}
+// Insumos aplicados: producto + unidad (nunca se suman unidades distintas)
+function insumosAplicados(rows) {
+  const m = new Map();
+  rows.forEach((r) => {
+    if (!esInsumo(r)) return;
+    const concepto = r["Concepto"] || "(sin concepto)";
+    const k = `${concepto}|${r["Unid."]}`;
+    if (!m.has(k)) m.set(k, { concepto, rubro: r["Tipo item"] || "(sin rubro)", unid: r["Unid."] || "", cant: 0, ha: 0, min: null, max: null, movimientos: 0, lotes: new Set() });
+    const e = m.get(k);
+    e.cant += r["Cantidad"] || 0; e.movimientos += 1; e.lotes.add(`${r["Campo"]}|${r["Lote"]}`);
+    if (r[COL_HAS_LABOR] > 0 && unidadLabor(r) === "ha") {
+      e.ha += r[COL_HAS_LABOR];
+      const d = (r["Cantidad"] || 0) / r[COL_HAS_LABOR];
+      if (e.min === null || d < e.min) e.min = d;
+      if (e.max === null || d > e.max) e.max = d;
+    }
+  });
+  return Array.from(m.values()).map((e) => ({ ...e, lotes: e.lotes.size, dosis: e.ha > 0 ? e.cant / e.ha : null }))
+    .sort((a, b) => a.rubro.localeCompare(b.rubro, "es") || a.concepto.localeCompare(b.concepto, "es"));
+}
+// Dosis con hasta 3 decimales significativos (0,0035 Lts/ha no queda en 0,00)
+const fmtDosis = (v) => (v === null || v === undefined ? "—" : fmtNum(v, v !== 0 && Math.abs(v) < 0.1 ? 4 : 2));
+
 
 // ---------------------------------------------------------------------------
 // PDF "Informe completo" con detalle por lote: para cada lote, encabezado + indicadores +
@@ -305,23 +417,37 @@ const MODOS_PDF_COSTOS = [
       { key: "hojaNueva", label: "Cada lote en hoja nueva", requiere: "detalleLotes" },
     ] },
 ];
+// Vista Labores: el informe completo es el cuaderno de campo (movimientos por lote, sin precios)
+const MODOS_PDF_LABORES = [
+  ...MODOS_PDF.filter((m) => m.key !== "completo"),
+  { key: "completo", label: "Cuaderno de campo", desc: "Comparativo por lote, insumos aplicados, contratistas y labores de cada lote",
+    opciones: [
+      { key: "detalleLotes", label: "Incluir detalle por lote" },
+      { key: "tipoDetalle", tipo: "radio", requiere: "detalleLotes", def: "movimientos",
+        valores: [{ value: "movimientos", label: "Labores (cuaderno)" }, { value: "resumen", label: "Resumen por rubro" }] },
+      { key: "hojaNueva", label: "Cada lote en hoja nueva", requiere: "detalleLotes" },
+    ] },
+];
 const COLOR_INSUMOS = [75, 107, 58], COLOR_SERVICIOS = [184, 132, 46];
 
-async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen") {
+async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen", sinPrecios = false) {
   const esMovs = tipoDetalle === "movimientos";
   const { doc, autoTable, pdfTxt, C, PAGE, TOP, BOTTOM, CONTENT_W } = api;
   const CHART_W = 78, GAP = 8, TABLE_X = PAGE.m + CHART_W + GAP;
 
   lotes.forEach(({ info, rows }, idx) => {
     const resumen = construirResumenLote(rows, info.ha);
-    const porRubro = costoPorRubroLote(rows);
+    // Sin precios: el gráfico muestra hectáreas trabajadas por labor en lugar del costo por rubro
+    const porRubro = sinPrecios
+      ? haPorLabor(rows, []).map((e) => ({ name: e.name, value: e._total, tipoDet: "SERVICIOS" }))
+      : costoPorRubroLote(rows);
     const altoChart = 8 + porRubro.length * 5.2 + 10;
 
     // ---- Salto de página ----
     if (idx === 0) {
       if (hojaNueva || BOTTOM - api.getY() < 60) api.nuevaPagina();
       doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(...C.ink);
-      doc.text(pdfTxt(`Detalle por lote: ${esMovs ? "movimientos" : "resumen por rubro"} (${lotes.length})`), PAGE.m, api.getY() + 4);
+      doc.text(pdfTxt(`${sinPrecios && esMovs ? "Cuaderno de campo por lote" : `Detalle por lote: ${esMovs ? "movimientos" : "resumen por rubro"}`} (${lotes.length})`), PAGE.m, api.getY() + 4);
       api.setY(api.getY() + 9);
     } else if (hojaNueva) {
       api.nuevaPagina();
@@ -341,7 +467,11 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
     y += 12;
 
     // ---- Indicadores ----
-    const kpis = [
+    const rl = sinPrecios ? resumenLabores(rows) : null;
+    const kpis = sinPrecios ? [
+      ["Labores", fmtNum(rl.labores)], ["Hectáreas trabajadas", `${fmtNum(rl.ha, 1)} ha${textoOtras(rl.otras) ? " · " + textoOtras(rl.otras) : ""}`],
+      ["Insumos aplicados", fmtNum(rl.insumos)], ["Última labor", rl.ultima ? `${fmtDate(rl.ultima.fecha)} · ${rl.ultima.labor}` : "-"],
+    ] : [
       ["Costo total", fmtUSD(info.total)], ["Insumos", fmtUSD(info.insumos)],
       ["Servicios", fmtUSD(info.servicios)], ["Costo por hectárea", fmtUSD2(info.costoHa)],
     ];
@@ -349,8 +479,8 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
     kpis.forEach(([l, v], i) => {
       doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...C.soft);
       doc.text(pdfTxt(l), PAGE.m + i * kw, y + 3);
-      doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(...C.ink);
-      doc.text(pdfTxt(v), PAGE.m + i * kw, y + 8);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(sinPrecios && i === 3 ? 9 : 11); doc.setTextColor(...C.ink);
+      doc.text(doc.splitTextToSize(pdfTxt(v), kw - 3)[0], PAGE.m + i * kw, y + 8);
     });
     y += 13;
     const yBloque = y;
@@ -358,7 +488,7 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
 
     // ---- Composición del costo por rubro (barras) ----
     doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(...C.ink);
-    doc.text("Composición del costo por rubro", PAGE.m, y + 3);
+    doc.text(sinPrecios ? "Hectáreas trabajadas por labor" : "Composición del costo por rubro", PAGE.m, y + 3);
     let cy = y + 7;
     const LABEL_W = 30, BAR_W = CHART_W - LABEL_W - 16;
     const max = Math.max(1, ...porRubro.map((r) => r.value));
@@ -370,12 +500,12 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
       doc.setFillColor(...(r.tipoDet === "SERVICIOS" ? COLOR_SERVICIOS : COLOR_INSUMOS));
       doc.rect(PAGE.m + LABEL_W, cy, w, 3.6, "F");
       doc.setFontSize(6.3); doc.setTextColor(...C.soft);
-      doc.text(pdfTxt(fmtUSD(r.value)), PAGE.m + LABEL_W + w + 1, cy + 2.6);
+      doc.text(pdfTxt(sinPrecios ? `${fmtNum(r.value, 1)} ha` : fmtUSD(r.value)), PAGE.m + LABEL_W + w + 1, cy + 2.6);
       cy += 5.2;
     });
     // leyenda
     cy += 2;
-    [["Insumos", COLOR_INSUMOS], ["Servicios", COLOR_SERVICIOS]].forEach(([l, col], i) => {
+    (sinPrecios ? [] : [["Insumos", COLOR_INSUMOS], ["Servicios", COLOR_SERVICIOS]]).forEach(([l, col], i) => {
       const lx = PAGE.m + LABEL_W + i * 22;
       doc.setFillColor(...col); doc.rect(lx, cy, 2.6, 2.6, "F");
       doc.setFontSize(7); doc.setTextColor(...C.ink); doc.text(l, lx + 3.6, cy + 2.2);
@@ -432,10 +562,11 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
         { content: "Total", styles: tot }, { content: `${fmtNum(movs.length)} movimientos`, styles: tot }, { content: "", styles: tot },
         { content: "", styles: tot }, { content: "", styles: tot }, { content: fmtUSD2(info.total), styles: { ...tot, halign: "right" } },
       ]);
+      const sinUSD = (fila) => (sinPrecios ? fila.slice(0, 5) : fila);
       autoTable(doc, {
         ...base,
-        head: [["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"]],
-        body: body.map((r) => r.map(limpiar)),
+        head: [sinUSD(["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"])],
+        body: body.map((r) => sinUSD(r).map(limpiar)),
         columnStyles: { 0: { cellWidth: 46 }, 1: { cellWidth: 26 }, 3: { halign: "right", cellWidth: 24 }, 4: { halign: "right", cellWidth: 26 }, 5: { halign: "right", cellWidth: 24 } },
         // Alto justo para fecha + labor + OTA (se dibujan a mano, con tamaños distintos)
         didParseCell: (d) => {
@@ -494,7 +625,7 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
             body.push([
               { content: cg.concepto, styles: { textColor: C.soft, cellPadding: { top: 1.2, bottom: 1.2, left: 7, right: 1.4 } } },
               cg.unitPrice === null ? "-" : fmtUSD2(cg.unitPrice),
-              cg.dosisHa === null ? "-" : `${num(cg.dosisHa, 2)} ${cg.unid || ""}/ha`,
+              cg.dosisHa === null ? "-" : `${fmtDosis(cg.dosisHa)} ${cg.unid || ""}/ha`,
               String(cg.items), `${num(cg.cant, 1)} ${cg.unid || ""}`, fmtUSD2(cg.costo), cg.costoHa === null ? "-" : fmtUSD2(cg.costoHa),
             ]);
           });
@@ -505,11 +636,13 @@ async function dibujarResumenLotes(api, lotes, hojaNueva, tipoDetalle = "resumen
         { content: String(rows.length), styles: { ...tot, halign: "right" } }, { content: "", styles: tot },
         { content: fmtUSD2(info.total), styles: { ...tot, halign: "right" } }, { content: fmtUSD2(info.costoHa), styles: { ...tot, halign: "right" } },
       ]);
+      // Sin precios: se quitan $/U, Costo y Costo/ha
+      const cols = sinPrecios ? [0, 2, 3, 4] : [0, 1, 2, 3, 4, 5, 6];
       autoTable(doc, {
         ...base,
-        head: [["Rubro / Concepto", "$/U", "Dosis/ha", "Items", "Cant.", "Costo", "Costo/ha"]],
-        body: body.map((r) => r.map(limpiar)),
-        columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right" } },
+        head: [cols.map((i) => ["Rubro / Concepto", "$/U", "Dosis/ha", "Items", "Cant.", "Costo", "Costo/ha"][i])],
+        body: body.map((r) => cols.map((i) => r[i]).map(limpiar)),
+        columnStyles: Object.fromEntries(cols.map((_, j) => [j, j === 0 ? {} : { halign: "right" }])),
       });
     }
     const finTabla = doc.lastAutoTable.finalY;
@@ -547,6 +680,15 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState({ key: "Fecha", dir: "desc" });
   const [showDetalle, setShowDetalle] = useState(false);
+  // Vista: "labores" (qué se hizo: labores, cantidades y dosis, sin precios) o "costos" (cuánto costó).
+  // Al cargar datos se elige sola: Labores si la mayoría de los ítems no tiene precio.
+  const [vista, setVista] = useState("costos");
+  const L = vista === "labores";
+  useEffect(() => {
+    if (!rows.length) return;
+    const sinPrecio = rows.filter((r) => r["Total"] === null).length;
+    setVista(sinPrecio > rows.length / 2 ? "labores" : "costos");
+  }, [rows]);
 
   // ---------- Carga: caché local y luego Firebase en vivo (igual que Cultivos) ----------
   useEffect(() => {
@@ -742,6 +884,15 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     };
   }, [filtered]);
 
+  // Vista Labores
+  const labKpis = useMemo(() => resumenLabores(filtered), [filtered]);
+  const labPorTipo = useMemo(() => haPorLabor(filtered, cultivos).slice(0, 10), [filtered, cultivos]);
+  const labCultivos = useMemo(() => cultivos.filter((c) => labPorTipo.some((e) => e[c] > 0)), [cultivos, labPorTipo]);
+  const labMes = useMemo(() => haPorMes(filtered), [filtered]);
+  const contratistas = useMemo(() => resumenContratistas(filtered), [filtered]);
+  const insumosApl = useMemo(() => insumosAplicados(filtered), [filtered]);
+  const pctConPrecio = filtered.length ? Math.round(((filtered.length - kpis.sinPrecio) / filtered.length) * 100) : 100;
+
   // Datos para gráficos: todos normalizados por hectárea y desglosados por cultivo
   // (deduplicando superficie por Campo+Lote+Cultivo para no sumar la misma ha varias veces)
   const porCultivo = useMemo(() => {
@@ -848,8 +999,10 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     const groups = new Map();
     rows.forEach((r) => {
       const problems = [];
-      if (r["Total"] === null) { problems.push("Sin precio"); totals.sinPrecio++; }
-      else if (r["Total"] === 0 && r["Cantidad"] > 0) { problems.push("Precio en $0"); totals.precioCero++; }
+      // En la vista Labores no se controlan los precios
+      if (!L && r["Total"] === null) { problems.push("Sin precio"); totals.sinPrecio++; }
+      else if (!L && r["Total"] === 0 && r["Cantidad"] > 0) { problems.push("Precio en $0"); totals.precioCero++; }
+      if (L && esServicio(r) && !(r[COL_HAS_LABOR] > 0)) { problems.push("Servicio sin hectáreas"); totals.servSinHa = (totals.servSinHa || 0) + 1; }
       if (!r["Sup.Cultivo"]) { problems.push("Sin superficie"); totals.sinSuperficie++; }
       if (!r["Cultivo"]) { problems.push("Sin cultivo"); totals.sinCultivo++; }
       if (!r["Campo"]) { problems.push("Sin campo"); totals.sinCampo++; }
@@ -865,7 +1018,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     });
     const list = Array.from(groups.values()).map((g) => ({ ...g, problems: Array.from(g.problemsSet) })).sort((a, b) => b.count - a.count);
     return { totals, list };
-  }, [rows]);
+  }, [rows, L]);
 
   // Comparativo por lotes (agrupa Campo + Lote + Cultivo dentro de lo ya filtrado)
   const loteAgg = useMemo(() => {
@@ -873,17 +1026,24 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     filtered.forEach((r) => {
       const key = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}`;
       if (!m.has(key)) {
-        m.set(key, { campo: r["Campo"], lote: r["Lote"], cultivo: r["Cultivo"], variedad: r["Variedad"], ha: r["Sup.Cultivo"] || 0, insumos: 0, servicios: 0, total: 0 });
+        m.set(key, { campo: r["Campo"], lote: r["Lote"], cultivo: r["Cultivo"], variedad: r["Variedad"], ha: r["Sup.Cultivo"] || 0, insumos: 0, servicios: 0, total: 0, sinPrecio: 0, _rows: [] });
       }
       const e = m.get(key);
+      e._rows.push(r);
+      if (r["Total"] === null) e.sinPrecio += 1;
       const v = r["Total"] || 0;
       if (r["Tipo Det."] === "INSUMOS") e.insumos += v; else if (r["Tipo Det."] === "SERVICIOS") e.servicios += v;
       e.total += v;
     });
-    return Array.from(m.values()).map((e) => ({ ...e, costoHa: e.ha > 0 ? e.total / e.ha : 0 }));
+    return Array.from(m.values()).map(({ _rows, ...e }) => {
+      const rl = resumenLabores(_rows);
+      return { ...e, costoHa: e.ha > 0 ? e.total / e.ha : 0,
+        labores: rl.labores, haTrab: rl.ha, insumosN: rl.insumos, ultima: rl.ultima ? rl.ultima.fecha : "", ultimaLabor: rl.ultima ? rl.ultima.labor : "" };
+    });
   }, [filtered]);
 
   const [loteSort, setLoteSort] = useState({ key: "total", dir: "desc" });
+  useEffect(() => { setLoteSort(L ? { key: "ultima", dir: "desc" } : { key: "total", dir: "desc" }); }, [L]);
   const toggleLoteSort = (key) => setLoteSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
   const loteSorted = useMemo(() => {
     const arr = [...loteAgg];
@@ -912,6 +1072,8 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     return ordenarMovimientosLote(filtered.filter((r) => `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}` === selectedLoteKey));
   }, [filtered, selectedLoteKey]);
   const selectedLoteByItem = useMemo(() => costoPorRubroLote(selectedLoteRows), [selectedLoteRows]);
+  const selLab = useMemo(() => resumenLabores(selectedLoteRows), [selectedLoteRows]);
+  const selLabChart = useMemo(() => haPorLabor(selectedLoteRows, []).map((e) => ({ name: e.name, value: e._total })), [selectedLoteRows]);
 
   // Resumen agrupado por Tipo Det. (Insumos primero, Servicios después) > Rubro > Concepto
   const [loteDetailTab, setLoteDetailTab] = useState("resumen");
@@ -990,6 +1152,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
       if (e.tipoDet && (i === 0 || itemsSorted[i - 1].tipoDet !== e.tipoDet)) itemsBody.push(filaGrupo(e.tipoDet, 6));
       itemsBody.push([e.rubro, e.concepto, e.precioProm === null ? "-" : fmtUSD2(e.precioProm), `${fmtNum(e.cant, 1)} ${e.unid || ""}`, fmtUSD2(e.costo), String(e.movimientos)]);
     });
+    if (L) return exportarPDFLabores(modo, opciones, filtros);
     const tot = loteSorted.reduce((a, e) => ({ ha: a.ha + e.ha, insumos: a.insumos + e.insumos, servicios: a.servicios + e.servicios, total: a.total + e.total }), { ha: 0, insumos: 0, servicios: 0, total: 0 });
     await generarPDF({
       modo, modoLabel: modo === "completo" ? `Informe completo${opciones.detalleLotes ? ` con detalle por lote: ${opciones.tipoDetalle === "movimientos" ? "movimientos" : "resumen por rubro"}${opciones.hojaNueva ? " (un lote por hoja)" : ""}` : ""}` : undefined,
@@ -1021,6 +1184,49 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     });
   };
 
+  // PDF de la vista Labores: sin precios; el informe completo es el cuaderno de campo
+  const exportarPDFLabores = async (modo, opciones, filtros) => {
+    const totL = loteSorted.reduce((a, e) => ({ ha: a.ha + e.ha, labores: a.labores + e.labores, haTrab: a.haTrab + e.haTrab }), { ha: 0, labores: 0, haTrab: 0 });
+    const insBody = [];
+    insumosApl.forEach((e, i) => {
+      if (i === 0 || insumosApl[i - 1].rubro !== e.rubro) insBody.push(filaGrupo(e.rubro, 6));
+      insBody.push([e.concepto, `${fmtNum(e.cant, 1)} ${e.unid}`, fmtNum(e.ha, 1), e.dosis === null ? "-" : `${fmtDosis(e.dosis)} ${e.unid}/ha`,
+        e.min === null ? "-" : `${fmtDosis(e.min)} - ${fmtDosis(e.max)}`, String(e.lotes)]);
+    });
+    await generarPDF({
+      modo, modoLabel: modo === "completo" ? `Cuaderno de campo${opciones.detalleLotes ? ` con detalle por lote: ${(opciones.tipoDetalle || "movimientos") === "movimientos" ? "labores" : "resumen por rubro"}${opciones.hojaNueva ? " (un lote por hoja)" : ""}` : ""}` : undefined,
+      titulo: "Labores", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Labores", encabezado: meta?.encabezado,
+      tablas: [
+        { titulo: "Comparativo por lote", nota: `${fmtNum(loteSorted.length)} lotes · orden actual de la tabla.`,
+          head: ["Campo", "Lote", "Cultivo", "Variedad", "Ha", "Labores", "Ha trabajadas", "Insumos", "Última labor"],
+          align: [null, null, null, null, "right", "right", "right", "right", null],
+          body: [
+            ...loteSorted.map((e) => [e.campo, e.lote, e.cultivo, e.variedad, fmtNum(e.ha, 1), fmtNum(e.labores), fmtNum(e.haTrab, 1), fmtNum(e.insumosN), e.ultima ? `${fmtDate(e.ultima)} ${e.ultimaLabor}` : "-"]),
+            filaTotal(["Total", "", "", "", fmtNum(totL.ha, 1), fmtNum(labKpis.labores), fmtNum(totL.haTrab, 1), fmtNum(labKpis.insumos), ""]),
+          ] },
+        { titulo: "Insumos aplicados", nota: `${fmtNum(insumosApl.length)} productos · dosis = cantidad / hectáreas aplicadas.`,
+          head: ["Producto", "Cantidad total", "Ha aplicadas", "Dosis prom./ha", "Dosis mín. - máx.", "Lotes"],
+          align: [null, "right", "right", "right", "right", "right"], body: insBody },
+        { titulo: "Resumen por contratista", nota: `${fmtNum(contratistas.length)} contratistas · incluye labores propias.`,
+          head: ["Contratista", "Labores", "Hectáreas", "Lotes", "Tipos de labor", "Última"],
+          align: [null, "right", "right", "right", null, null],
+          body: contratistas.map((e) => [e.contratista, fmtNum(e.labores), `${fmtNum(e.ha, 1)} ha${textoOtras(e.otras) ? " · " + textoOtras(e.otras) : ""}`, fmtNum(e.lotes), e.tiposLabor, e.ultima ? fmtDate(e.ultima) : "-"]) },
+        ...(opciones.detalleLotes ? [{
+          render: (api) => {
+            const porLote = new Map();
+            filtered.forEach((r) => {
+              const k = `${r["Campo"]}|${r["Lote"]}|${r["Cultivo"]}|${r["Variedad"]}`;
+              if (!porLote.has(k)) porLote.set(k, []);
+              porLote.get(k).push(r);
+            });
+            const lotes = loteSorted.map((e) => ({ info: e, rows: porLote.get(`${e.campo}|${e.lote}|${e.cultivo}|${e.variedad}`) || [] }));
+            return dibujarResumenLotes(api, lotes, !!opciones.hojaNueva, opciones.tipoDetalle || "movimientos", true);
+          },
+        }] : []),
+      ],
+    });
+  };
+
   const resetFiltros = () => { setCultivo("Todos"); setCampo("Todos"); setLote("Todos"); setAdministracion("Todos"); setTipoDet("Todos"); setTipoItem("Todos"); setDesde(""); setHasta(""); setSearch(""); };
   const hayFiltrosActivos = cultivo !== "Todos" || campo !== "Todos" || lote !== "Todos" || administracion !== "Todos" || tipoDet !== "Todos" || tipoItem !== "Todos" || desde || hasta || search;
 
@@ -1040,7 +1246,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
           </div>
         )}
         <div style={{ display: "flex", gap: 8 }}>
-          {meta && rows.length > 0 && <PdfMenu onExport={exportarPDF} modos={MODOS_PDF_COSTOS} />}
+          {meta && rows.length > 0 && <PdfMenu key={vista} onExport={exportarPDF} modos={L ? MODOS_PDF_LABORES : MODOS_PDF_COSTOS} />}
           {isAdmin && (<>
             <input ref={fileInputRef} type="file" accept={ACCEPT_ARCHIVOS} style={{ display: "none" }}
               onChange={(e) => handleFile(e.target.files?.[0])} />
@@ -1100,6 +1306,17 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
           )
         ) : (
           <>
+            {/* Vista: Labores | Costos */}
+            <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <button className="agri-chip" data-active={L} onClick={() => setVista("labores")}>Labores</button>
+              <button className="agri-chip" data-active={!L} onClick={() => setVista("costos")}>Costos</button>
+              <span style={{ fontSize: 12, color: "var(--ink-soft)", marginLeft: 6 }}>
+                {L ? "Labores, cantidades y dosis, sin precios"
+                  : pctConPrecio < 100 ? <span style={{ color: pctConPrecio < 80 ? "var(--rust)" : "var(--ink-soft)" }}>{pctConPrecio} % de los ítems con precio cargado</span>
+                  : "Todos los ítems con precio cargado"}
+              </span>
+            </div>
+
             {/* Filtros */}
             <div className="agri-card" style={{ padding: 14, marginBottom: 18 }}>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 12 }}>
@@ -1146,6 +1363,39 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
 
             {/* KPIs */}
             <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
+              {L ? (<>
+              <div className="agri-card" style={{ padding: 14 }}>
+                <div className="agri-kpi-label">Labores realizadas</div>
+                <div className="agri-kpi-value">{fmtNum(labKpis.labores)}</div>
+              </div>
+              <div className="agri-card" style={{ padding: 14 }}>
+                <div className="agri-kpi-label"><Ruler size={12} style={{ display: "inline", marginBottom: -1 }} /> Hectáreas trabajadas</div>
+                <div className="agri-kpi-value">{fmtNum(labKpis.ha)} ha</div>
+                {textoOtras(labKpis.otras) && <div style={{ fontSize: 11, color: "var(--ink-soft)", marginTop: 2 }}>además {textoOtras(labKpis.otras)}</div>}
+              </div>
+              <div className="agri-card" style={{ padding: 14 }}>
+                <div className="agri-kpi-label">Superficie</div>
+                <div className="agri-kpi-value">{fmtNum(kpis.superficie)} ha</div>
+              </div>
+              <div className="agri-card" style={{ padding: 14 }}>
+                <div className="agri-kpi-label">Insumos aplicados</div>
+                <div className="agri-kpi-value">{fmtNum(labKpis.insumos)}</div>
+                <div style={{ fontSize: 11, color: "var(--ink-soft)", marginTop: 2 }}>productos distintos</div>
+              </div>
+              <div className="agri-card" style={{ padding: 14 }}>
+                <div className="agri-kpi-label">Contratistas</div>
+                <div className="agri-kpi-value">{fmtNum(labKpis.contratistas)}</div>
+              </div>
+              <div className="agri-card" style={{ padding: 14 }}>
+                <div className="agri-kpi-label">Última labor</div>
+                <div className="agri-kpi-value" style={{ fontSize: 16 }}>{labKpis.ultima ? fmtDate(labKpis.ultima.fecha) : "—"}</div>
+                {labKpis.ultima && <div style={{ fontSize: 11, color: "var(--ink-soft)", marginTop: 2 }}>{labKpis.ultima.labor}</div>}
+              </div>
+              <div className="agri-card" style={{ padding: 14 }}>
+                <div className="agri-kpi-label"><MapPin size={12} style={{ display: "inline", marginBottom: -1 }} /> Campos · Lotes</div>
+                <div className="agri-kpi-value">{kpis.campos} · {kpis.lotes}</div>
+              </div>
+              </>) : (<>
               <div className="agri-card" style={{ padding: 14 }}>
                 <div className="agri-kpi-label"><DollarSign size={12} style={{ display: "inline", marginBottom: -1 }} /> Gasto total</div>
                 <div className="agri-kpi-value">{fmtUSD(kpis.gasto)}</div>
@@ -1176,8 +1426,58 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                 <div className="agri-kpi-label"><MapPin size={12} style={{ display: "inline", marginBottom: -1 }} /> Campos · Lotes</div>
                 <div className="agri-kpi-value">{kpis.campos} · {kpis.lotes}</div>
               </div>
+              </>)}
             </div>
 
+            {L ? (<>
+            {/* Gráficos de labores: hectáreas trabajadas */}
+            <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginBottom: 20 }}>
+              <div className="agri-card" style={{ padding: 16 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Hectáreas trabajadas por labor</div>
+                <ResponsiveContainer width="100%" height={Math.max(220, labPorTipo.length * 30 + 40)}>
+                  <BarChart data={labPorTipo} layout="vertical" margin={{ left: 10, right: 30 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 10, fill: "#2B2118" }} axisLine={false} tickLine={false} />
+                    <Tooltip formatter={(v, n) => [`${fmtNum(v, 1)} ha`, n]} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    {labCultivos.map((c, i) => (
+                      <Bar key={c} dataKey={c} name={c} stackId="ha" fill={cultivoColor(c, i)} maxBarSize={26} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="agri-card" style={{ padding: 16 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Hectáreas trabajadas por mes</div>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={labMes} margin={{ left: -10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#6B5E4F" }} axisLine={{ stroke: "#DCD2B8" }} tickLine={false} />
+                    <YAxis tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                    <Tooltip formatter={(v) => `${fmtNum(v, 1)} ha`} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Bar dataKey="ha" name="Hectáreas" fill="#4B6B3A" radius={[3, 3, 0, 0]} maxBarSize={48}>
+                      <LabelList dataKey="ha" content={<VerticalBarLabel formato={fmtHa} />} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="agri-card" style={{ padding: 16 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Hectáreas por contratista</div>
+                <ResponsiveContainer width="100%" height={Math.max(220, Math.min(10, contratistas.length) * 30 + 30)}>
+                  <BarChart data={contratistas.slice(0, 10)} layout="vertical" margin={{ left: 10, right: 30 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 11, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="contratista" width={140} tick={{ fontSize: 10, fill: "#2B2118" }} axisLine={false} tickLine={false} />
+                    <Tooltip formatter={(v) => `${fmtNum(v, 1)} ha`} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                    <Bar dataKey="ha" name="Hectáreas" fill="#B8842E" radius={[0, 3, 3, 0]} maxBarSize={26}>
+                      <LabelList dataKey="ha" content={<HorizontalBarLabel formato={fmtHa} />} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            </>) : (<>
             {/* Gráficos — todos normalizados por hectárea y desglosados por cultivo */}
             <div data-pdf="resumen" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14, marginBottom: 20 }}>
               <div className="agri-card" style={{ padding: 16 }}>
@@ -1234,6 +1534,9 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
               </div>
             </div>
 
+            </>)}
+
+            {!L && (<>
             {/* Comparativo por lotes */}
             <div data-pdf="resumen" className="agri-card" style={{ padding: 16, marginBottom: 14 }}>
               <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>Lotes con mayor gasto por hectárea</div>
@@ -1250,6 +1553,8 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
               </ResponsiveContainer>
             </div>
 
+            </>)}
+
             <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
               <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                 <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Comparativo por lote</div>
@@ -1259,7 +1564,10 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
                   <thead>
                     <tr>
-                      {[["campo", "Campo"], ["lote", "Lote"], ["cultivo", "Cultivo"], ["variedad", "Variedad"], ["ha", "Ha"], ["insumos", "Insumos"], ["servicios", "Servicios"], ["total", "Total"], ["costoHa", "USD/ha"]].map(([key, label]) => (
+                      {(L
+                        ? [["campo", "Campo"], ["lote", "Lote"], ["cultivo", "Cultivo"], ["variedad", "Variedad"], ["ha", "Ha"], ["labores", "Labores"], ["haTrab", "Ha trabajadas"], ["insumosN", "Insumos"], ["ultima", "Última labor"]]
+                        : [["campo", "Campo"], ["lote", "Lote"], ["cultivo", "Cultivo"], ["variedad", "Variedad"], ["ha", "Ha"], ["insumos", "Insumos"], ["servicios", "Servicios"], ["total", "Total"], ["costoHa", "USD/ha"]]
+                      ).map(([key, label]) => (
                         <th key={key} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)" }} onClick={() => toggleLoteSort(key)}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
                             {label} {loteSort.key === key && <ArrowUpDown size={11} />}
@@ -1280,6 +1588,15 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                         <td className="agri-td">{e.cultivo}</td>
                         <td className="agri-td" style={{ color: "var(--ink-soft)" }}>{e.variedad}</td>
                         <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.ha, 1)}</td>
+                        {L ? (<>
+                        <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.labores)}</td>
+                        <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{fmtNum(e.haTrab, 1)}</td>
+                        <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.insumosN)}</td>
+                        <td className="agri-td" style={{ whiteSpace: "nowrap" }}>
+                          {e.ultima ? fmtDate(e.ultima) : "—"}
+                          {e.ultimaLabor && <span style={{ fontSize: 11, color: "var(--ink-soft)", marginLeft: 6 }}>{e.ultimaLabor}</span>}
+                        </td>
+                        </>) : (<>
                         <td className="agri-td" style={{ textAlign: "right" }}>{fmtUSD(e.insumos)}</td>
                         <td className="agri-td" style={{ textAlign: "right" }}>{fmtUSD(e.servicios)}</td>
                         <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{fmtUSD(e.total)}</td>
@@ -1289,8 +1606,10 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                             <div style={{ flex: 1, minWidth: 40, height: 6, background: "var(--line)", borderRadius: 3, overflow: "hidden" }}>
                               <div style={{ width: `${Math.min(100, (e.costoHa / maxCostoHa) * 100)}%`, height: "100%", background: "var(--gold)" }} />
                             </div>
+                            {e.sinPrecio > 0 && <span title={`${e.sinPrecio} ítems sin precio: el costo está incompleto`} style={{ color: "var(--rust)", fontWeight: 700 }}>*</span>}
                           </div>
                         </td>
+                        </>)}
                         <td className="agri-td" style={{ textAlign: "center" }}>
                           <Eye size={15} color={isSelected ? "var(--gold)" : "var(--ink-soft)"} />
                         </td>
@@ -1321,6 +1640,25 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                 </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 16 }}>
+                  {L ? (<>
+                  <div>
+                    <div className="agri-kpi-label">Labores</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtNum(selLab.labores)}</div>
+                  </div>
+                  <div>
+                    <div className="agri-kpi-label">Hectáreas trabajadas</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtNum(selLab.ha, 1)} ha</div>
+                  </div>
+                  <div>
+                    <div className="agri-kpi-label">Insumos aplicados</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtNum(selLab.insumos)}</div>
+                  </div>
+                  <div>
+                    <div className="agri-kpi-label">Última labor</div>
+                    <div className="agri-kpi-value" style={{ fontSize: 15 }}>{selLab.ultima ? fmtDate(selLab.ultima.fecha) : "—"}</div>
+                    {selLab.ultima && <div style={{ fontSize: 11, color: "var(--ink-soft)" }}>{selLab.ultima.labor}</div>}
+                  </div>
+                  </>) : (<>
                   <div>
                     <div className="agri-kpi-label">Costo total</div>
                     <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtUSD(selectedLoteInfo.total)}</div>
@@ -1337,10 +1675,25 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                     <div className="agri-kpi-label">Costo por hectárea</div>
                     <div className="agri-kpi-value" style={{ fontSize: 15 }}>{fmtUSD2(selectedLoteInfo.costoHa)}</div>
                   </div>
+                  </>)}
                 </div>
 
                 <div className="agri-detail-grid" style={{ display: "grid", gridTemplateColumns: "minmax(190px, 0.8fr) minmax(320px, 1.8fr)", gap: 16 }}>
                   <div>
+                    {L ? (<>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Hectáreas trabajadas por labor</div>
+                    <ResponsiveContainer width="100%" height={Math.max(180, selLabChart.length * 26 + 30)}>
+                      <BarChart data={selLabChart} layout="vertical" margin={{ left: 10, right: 34 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#DCD2B8" horizontal={false} />
+                        <XAxis type="number" tick={{ fontSize: 10, fill: "#6B5E4F" }} tickFormatter={(v) => fmtNum(v)} axisLine={false} tickLine={false} />
+                        <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 10, fill: "#2B2118" }} axisLine={false} tickLine={false} />
+                        <Tooltip formatter={(v) => `${fmtNum(v, 1)} ha`} contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid #DCD2B8" }} />
+                        <Bar dataKey="value" name="Hectáreas" fill="#B8842E" radius={[0, 3, 3, 0]} maxBarSize={22}>
+                          <LabelList dataKey="value" content={<HorizontalBarLabel formato={fmtHa} />} />
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                    </>) : (<>
                     <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Composición del costo por rubro</div>
                     <ResponsiveContainer width="100%" height={Math.max(180, selectedLoteByItem.length * 26 + 30)}>
                       <BarChart data={selectedLoteByItem} layout="vertical" margin={{ left: 10 }}>
@@ -1359,6 +1712,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
+                    </>)}
                   </div>
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
@@ -1378,7 +1732,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                       <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 560 }}>
                         <thead>
                           <tr>
-                            {["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", "USD"].map((h) => (
+                            {["Fecha / Labor", "Rubro", "Concepto", "Cant.", "Dosis", ...(L ? [] : ["USD"])].map((h) => (
                               <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px", width: h === "Fecha / Labor" ? 210 : undefined }}>{h}</th>
                             ))}
                           </tr>
@@ -1411,8 +1765,8 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                                 <td className="agri-td" style={{ ...tdLabor, color: sameRubro ? "var(--line)" : "var(--ink-soft)" }}>{sameRubro ? "″" : r["Tipo item"]}</td>
                                 <td className="agri-td" style={tdLabor}>{r["Concepto"]}</td>
                                 <td className="agri-td" style={{ ...tdSm, textAlign: "right", whiteSpace: "nowrap" }}>{fmtNum(r["Cantidad"], 1)} {r["Unid."]}</td>
-                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", color: "var(--ink-soft)", whiteSpace: "nowrap" }}>{dosis === null ? "—" : `${fmtNum(dosis.valor, 4)} ${r["Unid."]}/${dosis.unidad}`}</td>
-                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", fontWeight: 600 }}>{r["Total"] === null ? "—" : fmtUSD2(r["Total"])}</td>
+                                <td className="agri-td" style={{ ...tdSm, textAlign: "right", color: "var(--ink-soft)", whiteSpace: "nowrap" }}>{dosis === null ? "—" : `${fmtDosis(dosis.valor)} ${r["Unid."]}/${dosis.unidad}`}</td>
+                                {!L && <td className="agri-td" style={{ ...tdSm, textAlign: "right", fontWeight: 600 }}>{r["Total"] === null ? "—" : fmtUSD2(r["Total"])}</td>}
                               </tr>
                             );
                           }); })()}
@@ -1424,7 +1778,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                       <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 620 }}>
                         <thead>
                           <tr>
-                            {["Rubro / Concepto", "$/U", "Dosis/ha", "Items", "Cant.", "Costo", "Costo/ha"].map((h) => (
+                            {(L ? ["Rubro / Concepto", "Dosis/ha", "Items", "Cant."] : ["Rubro / Concepto", "$/U", "Dosis/ha", "Items", "Cant.", "Costo", "Costo/ha"]).map((h) => (
                               <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", fontSize: 9, padding: "5px 7px", textAlign: h === "Rubro / Concepto" ? "left" : "right" }}>{h}</th>
                             ))}
                           </tr>
@@ -1434,33 +1788,33 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                             <React.Fragment key={di}>
                               <tr className="agri-tr" style={{ background: "rgba(75,107,58,0.16)" }}>
                                 <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em" }}>{dg.tipoDet}</td>
-                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11 }}></td>
+                                {!L && <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11 }}></td>}
                                 <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11 }}></td>
                                 <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{dg.items}</td>
                                 <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtNum(dg.cant, 1)}</td>
-                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtUSD2(dg.costo)}</td>
-                                <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{dg.costoHa === null ? "—" : fmtUSD2(dg.costoHa)}</td>
+                                {!L && <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtUSD2(dg.costo)}</td>}
+                                {!L && <td className="agri-td" style={{ padding: "5px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{dg.costoHa === null ? "—" : fmtUSD2(dg.costoHa)}</td>}
                               </tr>
                               {dg.rubros.map((rg, ri) => (
                                 <React.Fragment key={ri}>
                                   <tr className="agri-tr" style={{ background: "rgba(75,107,58,0.07)" }}>
                                     <td className="agri-td" style={{ padding: "4px 7px 4px 14px", fontSize: 11, fontWeight: 700 }}>{rg.rubro}</td>
-                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>
+                                    {!L && <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>}
                                     <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11 }}></td>
                                     <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.items}</td>
                                     <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtNum(rg.cant, 1)}</td>
-                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtUSD2(rg.costo)}</td>
-                                    <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.costoHa === null ? "—" : fmtUSD2(rg.costoHa)}</td>
+                                    {!L && <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{fmtUSD2(rg.costo)}</td>}
+                                    {!L && <td className="agri-td" style={{ padding: "4px 7px", fontSize: 11, textAlign: "right", fontWeight: 700 }}>{rg.costoHa === null ? "—" : fmtUSD2(rg.costoHa)}</td>}
                                   </tr>
                                   {rg.conceptos.map((cg, ci) => (
                                     <tr key={ci} className="agri-tr">
                                       <td className="agri-td" style={{ padding: "4px 7px 4px 26px", fontSize: 10, color: "var(--ink-soft)" }}>{cg.concepto}</td>
-                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.unitPrice === null ? "—" : fmtUSD2(cg.unitPrice)}</td>
-                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.dosisHa === null ? "—" : `${fmtNum(cg.dosisHa, 2)} ${cg.unid}/ha`}</td>
+                                      {!L && <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.unitPrice === null ? "—" : fmtUSD2(cg.unitPrice)}</td>}
+                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.dosisHa === null ? "—" : `${fmtDosis(cg.dosisHa)} ${cg.unid}/ha`}</td>
                                       <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.items}</td>
                                       <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtNum(cg.cant, 1)} {cg.unid}</td>
-                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtUSD2(cg.costo)}</td>
-                                      <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.costoHa === null ? "—" : fmtUSD2(cg.costoHa)}</td>
+                                      {!L && <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{fmtUSD2(cg.costo)}</td>}
+                                      {!L && <td className="agri-td" style={{ padding: "4px 7px", fontSize: 10, textAlign: "right" }}>{cg.costoHa === null ? "—" : fmtUSD2(cg.costoHa)}</td>}
                                     </tr>
                                   ))}
                                 </React.Fragment>
@@ -1476,6 +1830,87 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
               </div>
             )}
 
+            {L ? (<>
+            {/* Insumos aplicados (sin precios) */}
+            <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
+              <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Insumos aplicados</div>
+                <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(insumosApl.length)} productos · dosis = cantidad / hectáreas aplicadas</div>
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+                  <thead>
+                    <tr>
+                      {["Rubro", "Producto", "Cantidad total", "Ha aplicadas", "Dosis prom./ha", "Dosis mín. – máx.", "Lotes"].map((h, k) => (
+                        <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", textAlign: k >= 2 ? "right" : "left" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {insumosApl.map((e, i) => {
+                      const prev = insumosApl[i - 1];
+                      const nuevoRubro = !prev || prev.rubro !== e.rubro;
+                      const dispar = e.min !== null && e.max !== null && e.min > 0 && e.max / e.min >= 3;
+                      return (
+                        <tr key={i} className="agri-tr" style={{ borderTop: nuevoRubro && i > 0 ? "1px solid var(--ink)" : undefined }}>
+                          <td className="agri-td" style={{ fontWeight: nuevoRubro ? 600 : 400, color: nuevoRubro ? "var(--ink)" : "var(--line)" }}>{nuevoRubro ? e.rubro : "″"}</td>
+                          <td className="agri-td">{e.concepto}</td>
+                          <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtNum(e.cant, 1)} {e.unid}</td>
+                          <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.ha, 1)}</td>
+                          <td className="agri-td" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{e.dosis === null ? "—" : `${fmtDosis(e.dosis)} ${e.unid}/ha`}</td>
+                          <td className="agri-td" style={{ textAlign: "right", whiteSpace: "nowrap", color: dispar ? "var(--rust)" : "var(--ink-soft)" }}
+                            title={dispar ? "La dosis máxima es 3 veces o más la mínima: revisar la carga" : undefined}>
+                            {e.min === null ? "—" : `${fmtDosis(e.min)} – ${fmtDosis(e.max)}`}
+                          </td>
+                          <td className="agri-td" style={{ textAlign: "right", color: "var(--ink-soft)" }}>{e.lotes}</td>
+                        </tr>
+                      );
+                    })}
+                    {insumosApl.length === 0 && (
+                      <tr><td className="agri-td" colSpan={7} style={{ textAlign: "center", padding: 30, color: "var(--ink-soft)" }}>No hay insumos aplicados con los filtros de arriba.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Contratistas */}
+            <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
+              <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <div className="agri-serif" style={{ fontSize: 15, fontWeight: 600 }}>Resumen por contratista</div>
+                <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>{fmtNum(contratistas.length)} contratistas · incluye labores propias</div>
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+                  <thead>
+                    <tr>
+                      {["Contratista", "Labores", "Hectáreas", "Lotes", "Tipos de labor", "Última"].map((h, k) => (
+                        <th key={h} className="agri-th" style={{ position: "sticky", top: 0, background: "var(--paper-raised)", textAlign: k >= 1 && k <= 3 ? "right" : "left" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {contratistas.map((e, i) => (
+                      <tr key={i} className="agri-tr">
+                        <td className="agri-td" style={{ fontWeight: 600 }}>{e.contratista}</td>
+                        <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.labores)}</td>
+                        <td className="agri-td" style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>
+                          {fmtNum(e.ha, 1)} ha{textoOtras(e.otras) && <span style={{ fontWeight: 400, color: "var(--ink-soft)" }}> · {textoOtras(e.otras)}</span>}
+                        </td>
+                        <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(e.lotes)}</td>
+                        <td className="agri-td" style={{ fontSize: 12, color: "var(--ink-soft)" }}>{e.tiposLabor}</td>
+                        <td className="agri-td" style={{ whiteSpace: "nowrap" }}>{e.ultima ? fmtDate(e.ultima) : "—"}</td>
+                      </tr>
+                    ))}
+                    {contratistas.length === 0 && (
+                      <tr><td className="agri-td" colSpan={6} style={{ textAlign: "center", padding: 30, color: "var(--ink-soft)" }}>No hay servicios con los filtros de arriba.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            </>) : (<>
             {/* Precios y consumo por ítem */}
             <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden", marginBottom: 20 }}>
               <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -1527,6 +1962,8 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
               </div>
             </div>
 
+            </>)}
+
             {/* Tabla */}
             <div data-pdf="pantalla" className="agri-card" style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ padding: "12px 16px", borderBottom: showDetalle ? "1px solid var(--line)" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -1547,7 +1984,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
                   <thead>
                     <tr>
-                      {[["Fecha", "Fecha"], ["Campo", "Campo"], ["Lote", "Lote"], ["Cultivo", "Cultivo"], ["Origen", "Labor"], ["Tipo item", "Rubro"], ["Concepto", "Concepto"], ["Cantidad", "Cant."], ["Unid.", "Un."], ["Total", "USD"]].map(([key, label]) => (
+                      {[["Fecha", "Fecha"], ["Campo", "Campo"], ["Lote", "Lote"], ["Cultivo", "Cultivo"], ["Origen", "Labor"], ["Tipo item", "Rubro"], ["Concepto", "Concepto"], ["Cantidad", "Cant."], ["Unid.", "Un."], ...(L ? [] : [["Total", "USD"]])].map(([key, label]) => (
                         <th key={key} className="agri-th" onClick={() => toggleSort(key)}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
                             {label} {sort.key === key && <ArrowUpDown size={11} />}
@@ -1568,7 +2005,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                         <td className="agri-td">{r["Concepto"]}</td>
                         <td className="agri-td" style={{ textAlign: "right" }}>{fmtNum(r["Cantidad"], 2)}</td>
                         <td className="agri-td">{r["Unid."]}</td>
-                        <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{r["Total"] === null ? "—" : fmtUSD2(r["Total"])}</td>
+                        {!L && <td className="agri-td" style={{ textAlign: "right", fontWeight: 600 }}>{r["Total"] === null ? "—" : fmtUSD2(r["Total"])}</td>}
                       </tr>
                     ))}
                     {pageRows.length === 0 && (
@@ -1621,6 +2058,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
                       ["Sin cultivo", dataQuality.totals.sinCultivo],
                       ["Sin campo", dataQuality.totals.sinCampo],
                       ["Sin concepto", dataQuality.totals.sinConcepto],
+                      ["Servicio sin hectáreas", dataQuality.totals.servSinHa || 0],
                     ].filter(([, n]) => n > 0).map(([label, n]) => (
                       <div key={label} style={{ fontSize: 12, padding: "5px 11px", borderRadius: 999, border: "1px solid var(--line)", background: "var(--paper)" }}>
                         <strong>{fmtNum(n)}</strong> {label.toLowerCase()}
