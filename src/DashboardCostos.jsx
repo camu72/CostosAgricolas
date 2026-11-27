@@ -993,7 +993,7 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
     const tot = loteSorted.reduce((a, e) => ({ ha: a.ha + e.ha, insumos: a.insumos + e.insumos, servicios: a.servicios + e.servicios, total: a.total + e.total }), { ha: 0, insumos: 0, servicios: 0, total: 0 });
     await generarPDF({
       modo, modoLabel: modo === "completo" ? `Informe completo${opciones.detalleLotes ? ` con detalle por lote: ${opciones.tipoDetalle === "movimientos" ? "movimientos" : "resumen por rubro"}${opciones.hojaNueva ? " (un lote por hoja)" : ""}` : ""}` : undefined,
-      titulo: "Costos Agrícolas", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Costos", encabezado: meta?.encabezado,
+      titulo: "Costos", cliente: clienteNombre || slug, filtros, root: pdfRootRef.current, archivo: "Costos", encabezado: meta?.encabezado,
       tablas: [
         { titulo: "Comparativo por lote", nota: `${fmtNum(loteSorted.length)} lotes · orden actual de la tabla.`,
           head: ["Campo", "Lote", "Cultivo", "Variedad", "Ha", "Insumos", "Servicios", "Total", "USD/ha"],

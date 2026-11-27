@@ -7,6 +7,7 @@ import { firebaseConfig, CLOUD_SYNC_ENABLED, CLOUD_CLIENTS_BASE } from "./fireba
 import DashboardProduccion from "./DashboardProduccion.jsx";
 import DashboardCultivos from "./DashboardCultivos.jsx";
 import DashboardCostos from "./DashboardCostos.jsx";
+import { NOMBRE_APP, SUBTITULO_APP, TITULO_APP, LOGO_DATA_URL } from "./marca.js";
 import { PdfMenu, generarPDF, filaGrupo, filaTotal, MODOS_PDF } from "./pdfExport.jsx";
 import { leerFilasArchivo, validarColumnas, leerEncabezado, ACCEPT_ARCHIVOS } from "./lectorArchivo.js";
 import {
@@ -135,8 +136,22 @@ const AGRI_STYLES = `
   }
 `;
 
+// Marca: logo + "Gorrión · Tableros de Control". "grande" para la pantalla de ingreso.
+function Marca({ grande = false }) {
+  const t = grande ? 48 : 28;
+  return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: grande ? 12 : 8 }}>
+      <img src={LOGO_DATA_URL} alt="" width={t} height={t} style={{ display: "block" }} />
+      <div style={{ lineHeight: 1.1 }}>
+        <span style={{ fontWeight: 700, fontSize: grande ? 20 : 13, color: "var(--ink)" }}>{NOMBRE_APP}</span>
+        <span style={{ fontSize: grande ? 15 : 12, color: "var(--ink-soft)", marginLeft: 6 }}>· {SUBTITULO_APP}</span>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Componente principal
+// Vista de un perfil (sus tableros de control)
 // ---------------------------------------------------------------------------
 function ClienteDashboard({ slug, user, rol }) {
   // Puede actualizar datos el administrador o el dueño del perfil (las reglas de Firebase lo exigen igual)
@@ -151,7 +166,7 @@ function ClienteDashboard({ slug, user, rol }) {
 
   const DASHBOARDS = [
     { key: "cultivos",   label: "Cultivos" },
-    { key: "costos",     label: "Costos Agrícolas" },
+    { key: "costos",     label: "Costos" },
     { key: "produccion", label: "Producción" },
   ];
 
@@ -191,6 +206,10 @@ function ClienteDashboard({ slug, user, rol }) {
 
   const [clienteNombre, setClienteNombre] = useState("");
   useEffect(() => {
+    document.title = `${clienteNombre || slug} · ${TITULO_APP}`;
+    return () => { document.title = TITULO_APP; };
+  }, [clienteNombre, slug]);
+  useEffect(() => {
     if (!CLOUD_SYNC_ENABLED || !cloudDb) return;
     const unsub = onValue(ref(cloudDb, `${CLOUD_CLIENTS_BASE}/index/${slug}/nombre`), (snap) => {
       setClienteNombre(snap.val() || "");
@@ -201,13 +220,16 @@ function ClienteDashboard({ slug, user, rol }) {
   const masterhead = (
     <div className="agri-masthead">
       <div>
-        {user && (rol === "admin" || rol === "publicador") && (
-          <a href={urlBase()} onClick={(e) => { e.preventDefault(); irA({}); }}
-            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--ink-soft)", textDecoration: "none", marginBottom: 6 }}>
-            <ArrowLeft size={12} /> {rol === "admin" ? "Volver al panel" : "Volver a mis perfiles"}
-          </a>
-        )}
-        <div className="agri-title agri-serif">Costos Agrícolas - {clienteNombre || slug}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 8 }}>
+          <Marca />
+          {user && (rol === "admin" || rol === "publicador") && (
+            <a href={urlBase()} onClick={(e) => { e.preventDefault(); irA({}); }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--ink-soft)", textDecoration: "none" }}>
+              <ArrowLeft size={12} /> {rol === "admin" ? "Volver al panel" : "Volver a mis perfiles"}
+            </a>
+          )}
+        </div>
+        <div className="agri-title agri-serif">{clienteNombre || slug}</div>
         <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
           {DASHBOARDS.map((d) => (
             <button key={d.key} className="agri-chip" data-active={dashKey === d.key} onClick={() => navTo(d.key)}>
@@ -262,9 +284,10 @@ function LoginScreen() {
 
   return (
     <div className="agri-shell" style={{ maxWidth: 380, paddingTop: 70 }}>
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}><Marca grande /></div>
       <div className="agri-card" style={{ padding: 28 }}>
         <div className="agri-serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Ingresar</div>
-        <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 20 }}>Ingresá con tu cuenta para ver tus perfiles y sus dashboards.</div>
+        <div style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 20 }}>Ingresá con tu cuenta para ver tus perfiles y sus tableros.</div>
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <input className="agri-input" type="email" placeholder="Email" value={email} autoComplete="username"
             onChange={(e) => setEmail(e.target.value)} required />
@@ -589,6 +612,7 @@ function Portal({ user, rol }) {
     <div className="agri-shell">
       <div className="agri-masthead">
         <div>
+          <div style={{ marginBottom: 8 }}><Marca /></div>
           <div className="agri-title agri-serif">{esAdmin ? "Panel de administrador" : "Mis perfiles"}</div>
           <div className="agri-sub">{user.email}{esAdmin ? " · administrador" : " · publicador"}</div>
           {esAdmin && (
@@ -685,6 +709,15 @@ export default function App() {
     document.head.appendChild(link);
     return () => { try { document.head.removeChild(link); } catch (e) {} };
   }, []);
+
+  // Nombre de la pestaña del navegador e ícono (el logo)
+  useEffect(() => {
+    let link = document.querySelector('link[rel="icon"]');
+    if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.appendChild(link); }
+    link.type = "image/png";
+    link.href = LOGO_DATA_URL;
+  }, []);
+  useEffect(() => { document.title = TITULO_APP; }, []);
 
   // Sesión (persiste sola entre recargas gracias a Firebase Auth)
   useEffect(() => {

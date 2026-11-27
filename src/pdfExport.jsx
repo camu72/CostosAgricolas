@@ -52,12 +52,21 @@ export const filaTotal = (celdas) => celdas.map((c) => ({ content: c, styles: { 
  * @param {string}   o.archivo       nombre base del archivo
  * @param {object}   [o.encabezado]  { titulo, detalle } que manda Gorrión (opcional)
  */
+import { TITULO_APP, logoPng } from "./marca.js";
+
 export async function generarPDF({ modo, modoLabel, titulo, cliente, filtros, root, tablas = [], archivo, encabezado = null }) {
   const [{ jsPDF }, { autoTable }, { default: html2canvas }] = await Promise.all([
     import("jspdf"), import("jspdf-autotable"), import("html2canvas"),
   ]);
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   doc.setFont("helvetica", "normal");
+
+  // Marca arriba a la derecha: logo + "Gorrión - Tableros de Control"
+  const logo = await logoPng(256);
+  const xLogo = PAGE.w - PAGE.m - 11;
+  if (logo) doc.addImage(logo, "PNG", xLogo, 8, 11, 11);
+  doc.setFontSize(8.5); doc.setTextColor(...C.soft);
+  doc.text(pdfTxt(TITULO_APP), logo ? xLogo - 2.5 : PAGE.w - PAGE.m, 14.8, { align: "right" });
 
   // ---------- Encabezado de la primera página ----------
   const ahora = new Date();
@@ -186,7 +195,7 @@ export async function generarPDF({ modo, modoLabel, titulo, cliente, filtros, ro
     doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...C.soft);
     doc.setDrawColor(...C.line); doc.setLineWidth(0.2);
     doc.line(PAGE.m, PAGE.h - 8.5, PAGE.w - PAGE.m, PAGE.h - 8.5);
-    doc.text(pdfTxt(`${titulo} - ${cliente}`), PAGE.m, PAGE.h - 5);
+    doc.text(pdfTxt(`${titulo} - ${cliente}  ·  ${TITULO_APP}`), PAGE.m, PAGE.h - 5);
     doc.text(`Página ${i} de ${n}`, PAGE.w - PAGE.m, PAGE.h - 5, { align: "right" });
   }
 
