@@ -1306,24 +1306,29 @@ export default function DashboardCostos({ slug, isAdmin, cloudDb, onLogout, clie
           )
         ) : (
           <>
-            {/* Vista: Labores | Costos */}
-            <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
-              <button className="agri-chip" data-active={L} onClick={() => setVista("labores")}>Labores</button>
-              <button className="agri-chip" data-active={!L} onClick={() => setVista("costos")}>Costos</button>
-              <span style={{ fontSize: 12, color: "var(--ink-soft)", marginLeft: 6 }}>
-                {L ? "Labores, cantidades y dosis, sin precios"
-                  : pctConPrecio < 100 ? <span style={{ color: pctConPrecio < 80 ? "var(--rust)" : "var(--ink-soft)" }}>{pctConPrecio} % de los ítems con precio cargado</span>
-                  : "Todos los ítems con precio cargado"}
-              </span>
-            </div>
-
             {/* Filtros */}
             <div className="agri-card" style={{ padding: 14, marginBottom: 18 }}>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 12 }}>
-                <button className="agri-chip" data-active={cultivo === "Todos"} onClick={() => setCultivo("Todos")}>Todos los cultivos</button>
-                {cultivos.map((c) => (
-                  <button key={c} className="agri-chip" data-active={cultivo === c} onClick={() => setCultivo(c)}>{c}</button>
-                ))}
+              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                  <button className="agri-chip" data-active={cultivo === "Todos"} onClick={() => setCultivo("Todos")}>Todos los cultivos</button>
+                  {cultivos.map((c) => (
+                    <button key={c} className="agri-chip" data-active={cultivo === c} onClick={() => setCultivo(c)}>{c}</button>
+                  ))}
+                </div>
+                {/* Vista: Labores | Costos (mismo selector que Siembra | Cosecha en Cultivos) */}
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                  <div style={{ display: "inline-flex", border: "1px solid var(--ink)", borderRadius: 6, overflow: "hidden" }}>
+                    {[["labores", "Labores"], ["costos", "Costos"]].map(([k, l]) => (
+                      <button key={k} onClick={() => setVista(k)}
+                        style={{ border: "none", padding: "6px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", font: "inherit", background: vista === k ? "var(--ink)" : "transparent", color: vista === k ? "var(--paper)" : "var(--ink)" }}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                  {!L && pctConPrecio < 100 && (
+                    <span style={{ fontSize: 11, color: pctConPrecio < 80 ? "var(--rust)" : "var(--ink-soft)" }}>{pctConPrecio} % de los ítems con precio cargado</span>
+                  )}
+                </div>
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                 <div style={{ position: "relative", flex: "1 1 220px" }}>
